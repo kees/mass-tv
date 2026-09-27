@@ -1,0 +1,36 @@
+sub init()
+    m.body = m.top.findNode("body")
+    m.spinner = m.top.findNode("spinner")
+    m.spinner.poster.uri = "pkg:/images/spinner.png"
+    m.spinner.poster.width = 48
+    m.spinner.poster.height = 48
+    m.label = m.top.findNode("label")
+    m.showTimer = m.top.findNode("showTimer")
+    m.slowTimer = m.top.findNode("slowTimer")
+    m.showTimer.ObserveField("fire", "onShow")
+    m.slowTimer.ObserveField("fire", "onSlow")
+end sub
+
+sub onActive()
+    m.showTimer.control = "stop"
+    m.slowTimer.control = "stop"
+    if m.top.active
+        m.showTimer.control = "start"
+        m.slowTimer.control = "start"
+    else
+        m.body.visible = false
+        m.spinner.control = "stop"
+    end if
+end sub
+
+sub onShow()
+    if not m.top.active then return
+    m.label.text = m.top.text
+    m.body.visible = true
+    m.spinner.control = "start"
+end sub
+
+sub onSlow()
+    if not m.top.active then return
+    m.label.text = "Still waiting for Music Assistant…"
+end sub

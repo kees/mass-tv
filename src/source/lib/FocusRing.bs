@@ -1,0 +1,46 @@
+import "pkg:/source/lib/Util.bs"
+
+' The focus highlight for rows of text (nav bar, Library tabs, button
+' rows): a Poster showing pkg:/images/focus_ring.9.png, a rounded
+' translucent fill with a blue border, placed around the focused item.
+namespace focusring
+
+    const URI = "pkg:/images/focus_ring.9.png"
+    ' Text colors for rows of text (nav bar, tabs, button rows), the same
+    ' everywhere: plain items are gray, and white under the cursor's ring;
+    ' selected items are blue, and under the ring a stronger (darker,
+    ' more saturated) blue, distinct from the ring's own blue border.
+    const PLAIN_TEXT = "#9A9FB0"
+    const TEXT = "#FFFFFF"
+    const SELECTED = "#5A8DEE"
+    const SELECTED_TEXT = "#3A73E0"
+    ' Things to press outside the nav bar, grids, and lists (buttons, form
+    ' and settings rows) rest on a pill (pkg:/images/pill.9.png, a faint
+    ' rounded fill) with light text, so they stand apart from gray
+    ' description and status text; the focus ring draws over the pill.
+    const PILL_URI = "pkg:/images/pill.9.png"
+    const PILL_TEXT = "#D8DCE6"
+    ' A button that can't be used right now (e.g. Now Playing's More with
+    ' nothing loaded): dim text, under the cursor too.
+    const DISABLED_TEXT = "#5A6270"
+    ' Space between the text's box and the ring.
+    const PAD_X = 18
+    const PAD_Y = 6
+
+    ' Natural size of a label's text: { w, h }. The label must have no
+    ' fixed width (a set width is what boundingRect would return).
+    function textSize(lbl as object) as object
+        r = lbl.boundingRect()
+        return { w: r.width, h: r.height }
+    end function
+
+    ' Shows ring around a box at (x, y) of w by h, in the ring's parent's
+    ' coordinates, with the standard padding.
+    sub around(ring as object, x as float, y as float, w as float, h as float)
+        ring.translation = [x - focusring.PAD_X, y - focusring.PAD_Y]
+        ring.width = w + 2 * focusring.PAD_X
+        ring.height = h + 2 * focusring.PAD_Y
+        ring.visible = true
+    end sub
+
+end namespace

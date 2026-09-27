@@ -1,0 +1,92 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+
+' What Roku's screen reader (Audio Guide) says in Mass TV.
+'
+' Roku's dialogs and keyboards speak themselves. Everything else mutes
+' Roku's reading (muteAudioGuide) and speaks through speech.say, which
+' roAudioGuide voices only while Audio Guide is on: the nav bar, button
+' rows, Library's tab row, menus, the text panel, toasts, and every list
+' and grid (BaseScreen's speakLists: Roku's own reading of lists skipped
+' titles and misordered the rest on the device). A list item's second
+' part comes from its AUDIO_GUIDE_SUFFIX field when set (track rows:
+' artists, album, and length), else its description.
+namespace speech
+
+    ' Speaks text. flush: cut off whatever is being said (a move to
+    ' another item); otherwise it is said after it (news, like a toast).
+    ' Every call is logged, so tests and logs show what would be heard.
+    sub say(text as string, flush = true as boolean)
+        text = speech.clean(text)
+        if text = "" then return
+        log.debug("speech", "say", { text: text, flush: flush })
+        if m.speechGuide = invalid then m.speechGuide = CreateObject("roAudioGuide")
+        if m.speechGuide <> invalid then m.speechGuide.Say(text, flush, false)
+    end sub
+
+    ' Text as it should be read: the " · " that separates things on screen
+    ' becomes a pause, an en dash a "to" ("Name (Z–A)", "1998–2004").
+    function clean(text as dynamic) as string
+        if not util.isString(text) then return ""
+        out = text.Replace(" · ", ", ").Replace("·", ", ").Replace("–", " to ")
+        while Instr(1, out, "  ") > 0
+            out = out.Replace("  ", " ")
+        end while
+        return out.Trim()
+    end function
+
+    ' A length in words ("3 minutes 20 seconds"): read as digits, "3:20"
+    ' sounds like a time of day. "" for none.
+    function duration(seconds as dynamic) as string
+        if not util.isNumber(seconds) then return ""
+        total = Int(seconds)
+        if total <= 0 then return ""
+        h = total \ 3600
+        mins = (total mod 3600) \ 60
+        s = total mod 60
+        parts = []
+        if h > 0 then parts.Push(speech.count(h, "hour"))
+        if mins > 0 then parts.Push(speech.count(mins, "minute"))
+        ' Seconds only matter under an hour.
+        if s > 0 and h = 0 then parts.Push(speech.count(s, "second"))
+        return parts.Join(" ")
+    end function
+
+    function count(n as integer, unit as string) as string
+        if n = 1 then return "1 " + unit
+        return n.ToStr() + " " + unit + "s"
+    end function
+
+    ' "2 of 5" for index 1 of 5 items, as Roku's lists say it.
+    function position(index as integer, total as integer) as string
+        return (index + 1).ToStr() + " of " + total.ToStr()
+    end function
+
+    ' The non-empty parts, cleaned, joined with pauses.
+    function join(parts as object) as string
+        out = []
+        for each p in parts
+            t = speech.clean(p)
+            if t <> "" then out.Push(t)
+        end for
+        return out.Join(", ")
+    end function
+
+    ' What a list says after an item's title (then its position): kept in
+    ' the item's AUDIO_GUIDE_SUFFIX field, Roku's name for it.
+    sub setSuffix(node as object, text as string)
+        node.Update({ AUDIO_GUIDE_SUFFIX: text }, true)
+    end sub
+
+    ' Help text said after an item's place ("Unlink this profile, button
+    ' 3 of 3, Unlinks Alex from this TV...").
+    sub setHint(node as object, text as string)
+        node.Update({ speechHint: text }, true)
+    end sub
+
+    ' A track row's suffix: e.g. "now playing", then its second line
+    ' (artists and album), then its length.
+    sub describeRow(node as object, seconds as dynamic, lead = "" as string)
+        speech.setSuffix(node, speech.join([lead, node.description, speech.duration(seconds)]))
+    end sub
+end namespace

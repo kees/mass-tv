@@ -1,0 +1,55 @@
+import "pkg:/source/lib/Util.bs"
+
+' Remote-key gestures: tap vs hold on rewind and fast
+' forward. Pure; time is passed in.
+namespace keys
+
+    const HOLD_MS = 600
+    ' Also the instant replay step: Roku certification requires replay to
+    ' rewind 10 to 25 seconds.
+    const SEEK_STEP = 10
+
+    function initial() as object
+        return { downKey: "", downAt: 0 }
+    end function
+
+    ' Returns { state, action } where action is one of:
+    '   "", "seekBack", "seekForward", "previous", "next", "toggle"
+    function handle(state as object, key as string, press as boolean, nowMs as dynamic) as object
+        s = util.copyAA(state)
+        action = ""
+        if key = "rewind" or key = "fastforward"
+            if press
+                s.downKey = key
+                s.downAt = nowMs
+            else if s.downKey = key
+                held = nowMs - s.downAt
+                s.downKey = ""
+                if held >= keys.HOLD_MS
+                    if key = "rewind" then action = "previous" else action = "next"
+                else
+                    if key = "rewind" then action = "seekBack" else action = "seekForward"
+                end if
+            end if
+        else if key = "replay"
+            if press then action = "seekBack"
+        else if key = "play"
+            if press then action = "toggle"
+        end if
+        return { state: s, action: action }
+    end function
+
+    ' Keys the Scene handles globally; screens must not consume them.
+    function isGlobal(key as string) as boolean
+        return key = "play" or key = "rewind" or key = "fastforward" or key = "replay"
+    end function
+
+    ' Applies a seek delta to a base, clamped to [0, duration - 1].
+    function clampSeek(base as double, delta as double, duration as dynamic) as double
+        target = base + delta
+        if target < 0 then target = 0
+        if util.isNumber(duration) and duration > 1 and target > duration - 1 then target = duration - 1
+        return target
+    end function
+
+end namespace

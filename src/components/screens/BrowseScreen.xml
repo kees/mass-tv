@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Provider browse trees (music/browse), e.g. a streaming service's
+     Made For You, Moods, and Genres. params: { path, title, trail }; trail is the
+     titles of the levels above, for the breadcrumb heading. -->
+<component name="BrowseScreen" extends="BaseScreen">
+    <children>
+        <!-- Breadcrumb: the levels above, dim, then the current one. -->
+        <Label id="trail" translation="[96,24]" color="#9A9FB0" font="font:MediumSystemFont" />
+        <Label id="heading" translation="[96,24]" width="1728" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+        <Label id="hint" translation="[1424,28]" width="400" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" text="(Back to go up)" visible="false" />
+        <MarkupList
+            id="list"
+            translation="[96,100]"
+            itemComponentName="TrackRow"
+            itemSize="[1728,70]"
+            itemSpacing="[0,4]"
+            numRows="10"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <ListFade id="listFade" />
+        <Label id="empty" translation="[96,220]" width="1728" color="#9A9FB0" font="font:MediumSystemFont" wrap="true" visible="false" />
+        <LoadingIndicator id="loadingIndicator" translation="[96,120]" />
+    </children>
+</component>

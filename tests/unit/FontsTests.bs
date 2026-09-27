@@ -1,0 +1,10 @@
+sub fontsTests()
+    tst.begin("fonts")
+    tst.ok(not fonts.needsBundled("Goldberg Variations"), "plain Latin: system font")
+    tst.ok(not fonts.needsBundled("Žakevičius · Björk – “Jóga”…"), "accents and punctuation: system font")
+    tst.ok(fonts.needsBundled("坂本龍一"), "CJK: bundled font")
+    tst.ok(fonts.needsBundled("케이팝"), "Hangul: bundled font")
+    tst.ok(fonts.needsBundled("night drive 🌘 mix"), "emoji: bundled font")
+    tst.ok(fonts.needsBundled("▶ Play"), "symbols: bundled font")
+    tst.ok(not fonts.needsBundled(""), "empty: system font")
+end sub

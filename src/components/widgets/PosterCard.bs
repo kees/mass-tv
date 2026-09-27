@@ -1,0 +1,139 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Images.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+' The caption (title, subtitle) below the cover, and its inset from the
+' card's edges so the focus frame doesn't touch the text.
+const CAPTION_HEIGHT = 80
+const CAPTION_INSET = 12
+
+sub init()
+    m.art = m.top.findNode("art")
+    m.frame = m.top.findNode("frame")
+    m.title = m.top.findNode("title")
+    m.subtitle = m.top.findNode("subtitle")
+    m.initial = m.top.findNode("initial")
+    m.letter = ""
+    m.art.ObserveField("placeholderShown", "onPlaceholderShown")
+end sub
+
+' The placeholder: the title's initials (up to two letters, as in MA's
+' web UI) over an 8% emblem, or a 25% emblem when there are none (the
+' strengths chosen from rendered mockups). The letters are set before
+' the cover, so they're ready when CoverArt reports.
+sub onContent()
+    c = m.top.itemContent
+    if c = invalid then return
+    fonts.label(m.title, c.title, true)
+    fonts.label(m.subtitle, c.description)
+    m.letter = images.initials(c.title)
+    if m.letter <> ""
+        m.art.placeholderUri = "pkg:/images/placeholder_card_letter.png"
+    else
+        m.art.placeholderUri = "pkg:/images/placeholder_card.png"
+    end if
+    url = c.HDPosterUrl
+    if url = invalid then url = ""
+    m.art.uri = url
+    ' This card's column in its row (list items are reused as rows
+    ' scroll, so it's worked out again with each new content).
+    m.col = -1
+    rowNode = c.getParent()
+    if rowNode <> invalid
+        for i = 0 to rowNode.getChildCount() - 1
+            if rowNode.getChild(i).isSameNode(c)
+                m.col = i
+                exit for
+            end if
+        end for
+    end if
+end sub
+
+' Whether this card is its row's focused card (Aim.bs records the row's
+' focused column on the row; a row not visited yet focuses its first).
+function isRowFocus() as boolean
+    c = m.top.itemContent
+    if c = invalid or m.col = invalid then return false
+    rowNode = c.getParent()
+    if rowNode <> invalid and rowNode.hasField("focusCol") then return rowNode.focusCol = m.col
+    return m.col = 0
+end function
+
+sub onPlaceholderShown()
+    if m.art.placeholderShown then fonts.label(m.initial, m.letter) else m.initial.text = ""
+end sub
+
+sub onSize()
+    w = m.top.width
+    if w <= 0 then return
+    m.art.width = w
+    m.art.height = w
+    m.initial.width = w
+    m.initial.height = w
+    ' The letter at about twice LargeBoldSystemFont's size (~100 px on a
+    ' 240 px card), scaled with the card.
+    size = Int(w * 0.42)
+    if m.letterSize <> size
+        m.letterSize = size
+        f = CreateObject("roSGNode", "Font")
+        f.uri = "font:BoldSystemFontFile"
+        f.size = size
+        m.initial.font = f
+    end if
+    ' The frame surrounds the whole card (the slot's height, e.g. 320 for a
+    ' 240 px cover), so it takes in the title and subtitle.
+    h = m.top.height
+    if h <= w then h = w + CAPTION_HEIGHT
+    m.top.findNode("frameTop").width = w
+    m.top.findNode("frameBottom").width = w
+    m.top.findNode("frameBottom").translation = [0, h - 4]
+    m.top.findNode("frameLeft").height = h
+    m.top.findNode("frameRight").height = h
+    m.top.findNode("frameRight").translation = [w - 4, 0]
+    m.title.width = w - CAPTION_INSET * 2
+    m.subtitle.width = w - CAPTION_INSET * 2
+    m.title.translation = [CAPTION_INSET, w + 12]
+    m.subtitle.translation = [CAPTION_INSET, w + 44]
+end sub
+
+sub onFocus()
+    f = m.top.focusPercent
+    ' Moving between RowList rows animates rowFocusPercent (the old row
+    ' 1 -> 0, the new row 0 -> 1), but the card the new row will focus is
+    ' told nothing else until the slide ends (on the device, focusPercent
+    ' stays 0 and itemHasFocus false), so its frame appeared only then. As
+    ' in a grid, the new card's frame shows at once and stays through the
+    ' slide, and the old one fades out.
+    ' Each animation step reports rowFocusPercent and then focusPercent at
+    ' the same value, so the direction is decided only when rfp moves; an
+    ' unchanged rfp keeps the last decision (compared with >=, the second
+    ' report counted the old row's card as incoming, and its frame stayed
+    ' up and vanished at the end instead of fading).
+    rfp = m.top.rowFocusPercent
+    if m.lastRfp = invalid then m.lastRfp = rfp
+    if m.top.rowListHasFocus and rfp > 0 and rfp < 1 and not m.top.itemHasFocus
+        if not isRowFocus()
+            f = 0
+            m.incoming = false
+        else
+            if rfp > m.lastRfp then m.incoming = true
+            if rfp < m.lastRfp then m.incoming = false
+            if m.incoming = true then f = 1 else f = rfp
+        end if
+    else if m.incoming = true and rfp >= 1 and not m.top.itemHasFocus and isRowFocus()
+        ' The row has arrived but the card isn't told it's focused yet:
+        ' keep the frame (it flashed off for a moment here).
+        f = 1
+    end if
+    if m.top.itemHasFocus or rfp <= 0 then m.incoming = false
+    m.lastRfp = rfp
+    if m.top.itemHasFocus then f = 1
+    ' Highlight only while the containing RowList/MarkupGrid has focus.
+    if not (m.top.gridHasFocus or m.top.rowListHasFocus) then f = 0
+    m.frame.opacity = f
+    if f > 0.5
+        m.title.color = "#FFFFFF"
+    else
+        m.title.color = "#EEEEF6"
+    end if
+end sub

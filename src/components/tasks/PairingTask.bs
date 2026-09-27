@@ -1,0 +1,96 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/HttpMini.bs"
+import "pkg:/source/lib/SocketServer.bs"
+
+const PAIRING_TIMEOUT_MS = 600000
+
+sub init()
+    m.top.functionName = "runPairing"
+end sub
+
+sub runPairing()
+    m.logTag = "pairing"
+    cfg = m.top.config
+    m.cfg = cfg
+    m.done = false
+    port = CreateObject("roMessagePort")
+    m.top.ObserveField("stop", port)
+    ' A previous attempt may still hold the first port; try a few. Skip the
+    ' debug log port: the Roku lets two listeners bind the same port, and
+    ' then connections land on either one.
+    srv = invalid
+    for each p in [cfg.port, cfg.port + 2, cfg.port + 3, cfg.port + 4, cfg.port + 5]
+        srv = sockserver.open(p, port)
+        if srv <> invalid
+            m.cfg.port = p
+            exit for
+        end if
+    end for
+    if srv = invalid
+        log.error("pairing", "could not listen", { port: cfg.port })
+        m.top.event = { type: "error", message: "Could not start the setup page." }
+        return
+    end if
+    url = "http://" + cfg.rokuIp + ":" + m.cfg.port.ToStr() + "/s/" + cfg.nonce
+    log.info("pairing", "listening", { port: m.cfg.port })
+    m.top.event = { type: "listening", url: url }
+    clock = CreateObject("roTimespan")
+    while not m.done
+        msg = Wait(1000, port)
+        if type(msg) = "roSGNodeEvent" and msg.GetField() = "stop"
+            m.done = true
+        else
+            sockserver.handle(srv, msg, routePairing)
+        end if
+        if clock.TotalMilliseconds() > PAIRING_TIMEOUT_MS
+            log.info("pairing", "timed out")
+            m.top.event = { type: "error", message: "Setup timed out. Press OK to try again." }
+            m.done = true
+        end if
+    end while
+    sockserver.close(srv)
+    log.info("pairing", "listener closed")
+end sub
+
+function routePairing(req as object) as string
+    nonce = m.cfg.nonce
+    log.debug("pairing", "request", { method: req.method, path: pathForLog(req.path), peer: req.peer })
+    if req.method <> "GET" then return httpmini.response(405, "text/plain", "GET only")
+    if req.path = "/favicon.ico" then return httpmini.response(404, "text/plain", "")
+    parts = req.path.Split("/")
+    ' ["", "s"|"cb", nonce]
+    if parts.Count() < 3 then return httpmini.response(404, "text/html; charset=utf-8", pairpage.message("Not found", "Scan the code on the TV to start linking."))
+    kind = parts[1]
+    if parts[2] <> nonce
+        log.warn("pairing", "wrong nonce", { peer: req.peer })
+        return httpmini.response(403, "text/html; charset=utf-8", pairpage.message("Expired link", "This link is no longer valid. Scan the code on the TV again."))
+    end if
+
+    if kind = "s"
+        ' Straight on to the chosen server's own login page.
+        server = m.cfg.server
+        m.top.event = { type: "opened" }
+        cb = "http://" + m.cfg.rokuIp + ":" + m.cfg.port.ToStr() + "/cb/" + nonce
+        log.info("pairing", "redirecting phone to MA login", { server: server })
+        return httpmini.redirect(pairpage.loginUrl(server, util.str(m.cfg.deviceName, "Roku"), cb))
+    end if
+
+    if kind = "cb"
+        code = util.str(req.query.code, "")
+        if code = "" then return httpmini.response(400, "text/html; charset=utf-8", pairpage.message("Linking incomplete", "Music Assistant didn't finish linking. Scan the code on the TV to try again."))
+        log.info("pairing", "received sign-in code")
+        m.top.event = { type: "code", code: code }
+        m.done = true
+        return httpmini.response(200, "text/html; charset=utf-8", pairpage.message("Linked", "You can go back to the TV now."))
+    end if
+
+    return httpmini.response(404, "text/plain", "not found")
+end function
+
+' The nonce is a secret while pairing is open; keep it out of logs.
+function pathForLog(path as string) as string
+    parts = path.Split("/")
+    if parts.Count() >= 3 then return "/" + parts[1] + "/<nonce>"
+    return path
+end function

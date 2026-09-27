@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A modal menu of choices, in place of StandardMessageDialog (whose
+     look jars, and which loses focus if its buttons change while it
+     shows). Screens use it through BaseScreen's showMenu, or add it to
+     the scene themselves and set `active` = true to give it focus (Library
+     does, to relabel it while it shows). It sizes itself to its labels,
+     wraps from the last item to the first and back, and takes every key
+     while it has focus.
+
+     title      heading
+     items      array of labels; set any time (same count keeps focus)
+     chosen     array of booleans: selected items, shown in blue (the
+                "selected" idiom; e.g. the current sort, an "on" switch)
+     sizeHints  other labels the items may change to while it shows; the
+                panel is sized for them too, so it never has to grow
+     selected   output: index chosen with OK
+     closed     output: true when Back asks to close (the owner removes it) -->
+<component name="OptionsMenu" extends="Group">
+    <interface>
+        <field id="title" type="string" onChange="onTitle" />
+        <field id="items" type="array" onChange="onItems" />
+        <field id="chosen" type="array" onChange="onItems" />
+        <field id="sizeHints" type="array" onChange="layout" />
+        <field id="active" type="boolean" onChange="onActive" />
+        <field id="selected" type="integer" alwaysNotify="true" />
+        <field id="closed" type="boolean" alwaysNotify="true" />
+    </interface>
+    <children>
+        <!-- Darker than a Roku dialog, so the gray focus pill stands out. -->
+        <Rectangle id="backdrop" color="#000000" opacity="0.75" width="1920" height="1080" />
+        <Rectangle id="panel" color="#0C0F12" />
+        <Label id="titleLabel" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+        <Rectangle id="rule" color="#2A313B" height="2" />
+        <MarkupList
+            id="list"
+            itemComponentName="MenuRow"
+            itemSpacing="[0,8]"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <!-- Measures label widths for the panel size. -->
+        <Label id="probe" visible="false" font="font:MediumSystemFont" />
+    </children>
+</component>

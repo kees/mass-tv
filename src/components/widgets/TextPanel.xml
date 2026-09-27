@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A modal panel showing a long text in full (e.g. an artist's
+     biography, which the Detail header cuts to a few lines), styled like
+     OptionsMenu. It sizes itself to the text, but never taller than the
+     screen allows with its Close button in view; a longer text scrolls
+     with Up and Down (Close keeps the focus). OK on Close or Back closes
+     it. Add it to the scene, then set `active` = true to give it focus.
+
+     title   heading (e.g. the item's name)
+     text    the text (plain; wrapped to the panel's width)
+     active  input: take focus
+     closed  output: true when Close or Back asks to close (the owner
+             removes it) -->
+<component name="TextPanel" extends="Group">
+    <interface>
+        <field id="title" type="string" onChange="layout" />
+        <field id="text" type="string" onChange="layout" />
+        <field id="active" type="boolean" onChange="onActive" />
+        <field id="closed" type="boolean" alwaysNotify="true" />
+    </interface>
+    <children>
+        <Rectangle id="backdrop" color="#000000" opacity="0.75" width="1920" height="1080" />
+        <Rectangle id="panel" color="#0C0F12" />
+        <Label id="titleLabel" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+        <Rectangle id="rule" color="#2A313B" height="2" />
+        <!-- The text, clipped to the visible window and moved to scroll. -->
+        <Group id="window">
+            <Label id="body" color="#D8DCE6" font="font:MediumSystemFont" wrap="true" lineSpacing="6" />
+        </Group>
+        <Label id="hint" text="Up/Down to scroll" color="#9A9FB0" font="font:SmallSystemFont" visible="false" />
+        <ButtonRow id="closeButton" minWidth="160" />
+    </children>
+</component>

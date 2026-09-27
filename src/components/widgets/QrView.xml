@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Renders `text` as a QR code in a `size` pixel square (white quiet zone
+     included) with Rectangles for the horizontal runs of dark modules and
+     the vertical runs of two or more, so no two dark modules meet on an
+     edge and scaled rendering can't open a light seam. The white square
+     is exactly `size` (any size); the modules are whole-pixel cells, as
+     big as fit with at least a 4-cell quiet zone, centered in it. -->
+<component name="QrView" extends="Group">
+    <interface>
+        <field id="text" type="string" onChange="render" />
+        <field id="size" type="integer" value="360" onChange="render" />
+    </interface>
+    <children>
+        <Rectangle id="bg" color="#FFFFFF" width="360" height="360" />
+        <Group id="modules" />
+    </children>
+</component>

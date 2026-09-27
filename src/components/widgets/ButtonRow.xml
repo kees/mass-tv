@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A horizontal row of buttons. Left/Right move between buttons and OK
+     selects; Up/Down are not consumed, so the screen can move focus off the
+     row. (ButtonGroup always navigates with Up/Down, even laid out
+     horizontally.)
+
+     buttons         array of labels (set any time; focus index is kept)
+     active          array of booleans: toggles that are on (shuffle,
+                     repeat, liked) get blue text
+     disabled        array of booleans: buttons that can't be used now,
+                     greyed; they still take the cursor, but OK does
+                     nothing
+     focusIndex      focused button (input and output)
+     selected        output: index of the button chosen with OK
+     sizeHints       optional array, per button, of every label it can
+                     show (e.g. ["Play", "Pause"]); its slot fits the
+                     widest, so relabeling doesn't shift the buttons after
+                     it. Use [] for buttons that never change.
+     passEdges       true: Left on the first button and Right on the last
+                     aren't consumed, so the screen can move focus beside
+                     the row.
+     context         what the screen reader says before the focused button
+                     when the row gets focus (e.g. a Detail page's title
+                     and artist), so it's heard before, not after, the
+                     button. -->
+<component name="ButtonRow" extends="Group">
+    <interface>
+        <field id="context" type="string" />
+        <field id="buttons" type="array" onChange="rebuild" />
+        <field id="sizeHints" type="array" onChange="rebuild" />
+        <field id="active" type="array" onChange="render" />
+        <field id="disabled" type="array" onChange="render" />
+        <field id="focusIndex" type="integer" value="0" onChange="onFocusIndex" />
+        <field id="selected" type="integer" alwaysNotify="true" />
+        <field id="minWidth" type="integer" value="120" />
+        <field id="spacing" type="integer" value="12" />
+        <field id="passEdges" type="boolean" value="false" />
+    </interface>
+    <children>
+        <!-- Focus ring around the focused button while the row has focus. -->
+        <Poster id="ring" uri="pkg:/images/focus_ring.9.png" visible="false" />
+        <Group id="row" />
+        <!-- Measures text in the buttons' font. Transparent rather than
+             invisible, which could make its bounding box empty. -->
+        <Label id="measure" opacity="0" font="font:SmallBoldSystemFont" />
+    </children>
+</component>

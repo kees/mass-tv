@@ -1,0 +1,99 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Speech.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+' The text's width, the panel's padding, and the space kept free above
+' and below the panel (so the panel, Close included, always fits).
+const TEXT_W = 1200
+const PAD = 40
+const TITLE_H = 60
+const SCREEN_MARGIN = 64
+const BUTTON_H = 56
+' How far one Up/Down press scrolls: about three lines.
+const SCROLL_STEP = 150
+
+sub init()
+    m.panel = m.top.findNode("panel")
+    m.titleLabel = m.top.findNode("titleLabel")
+    m.rule = m.top.findNode("rule")
+    m.window = m.top.findNode("window")
+    m.body = m.top.findNode("body")
+    m.hint = m.top.findNode("hint")
+    m.closeButton = m.top.findNode("closeButton")
+    m.closeButton.buttons = ["Close"]
+    m.closeButton.ObserveField("selected", "onClose")
+    m.body.width = TEXT_W
+    m.offset = 0
+    m.maxOffset = 0
+end sub
+
+' Sizes the panel to the text, up to the screen's height, and centers it.
+sub layout()
+    fonts.label(m.titleLabel, m.top.title, true)
+    fonts.label(m.body, m.top.text)
+    ' The screen reader says it all, then Close (which has the focus).
+    m.closeButton.context = speech.join([m.top.title, m.top.text])
+    textH = m.body.boundingRect().height
+    ' Everything but the text: padding, title and rule, the gap before
+    ' Close (room for the scroll hint), Close, padding.
+    chrome = PAD + TITLE_H + 24 + 32 + BUTTON_H + PAD
+    viewH = textH
+    maxViewH = 1080 - 2 * SCREEN_MARGIN - chrome
+    if viewH > maxViewH then viewH = maxViewH
+    m.viewH = viewH
+    m.maxOffset = textH - viewH
+    if m.maxOffset < 0 then m.maxOffset = 0
+    panelW = TEXT_W + 2 * PAD
+    panelH = chrome + viewH
+    x = Int((1920 - panelW) / 2)
+    top = Int((1080 - panelH) / 2)
+    m.panel.width = panelW
+    m.panel.height = panelH
+    m.panel.translation = [x, top]
+    m.titleLabel.translation = [x + PAD, top + PAD]
+    m.titleLabel.width = TEXT_W
+    m.rule.width = TEXT_W
+    m.rule.translation = [x + PAD, top + PAD + TITLE_H]
+    textTop = top + PAD + TITLE_H + 24
+    m.window.translation = [x + PAD, textTop]
+    m.window.clippingRect = [0, 0, TEXT_W, viewH]
+    m.hint.visible = m.maxOffset > 0
+    m.hint.translation = [x + PAD, textTop + viewH + 4]
+    ' Close centered under the text.
+    w = m.closeButton.boundingRect().width
+    m.closeButton.translation = [x + Int((panelW - w) / 2), top + panelH - PAD - BUTTON_H]
+    scrollTo(0)
+    log.debug("textpanel", "layout", { textH: textH, viewH: viewH, scrolls: m.maxOffset > 0 })
+end sub
+
+sub scrollTo(offset as integer)
+    if offset > m.maxOffset then offset = m.maxOffset
+    if offset < 0 then offset = 0
+    m.offset = offset
+    m.body.translation = [0, -offset]
+end sub
+
+sub onActive()
+    if m.top.active then m.closeButton.setFocus(true)
+end sub
+
+sub onClose()
+    log.debug("textpanel", "close")
+    m.top.closed = true
+end sub
+
+' Close has the focus; Up/Down scroll the text, Back closes, and every
+' other key stops here, so nothing behind the panel reacts.
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return true
+    if key = "down" or key = "up"
+        before = m.offset
+        if key = "down" then scrollTo(m.offset + SCROLL_STEP) else scrollTo(m.offset - SCROLL_STEP)
+        log.debug("textpanel", "scroll", { offset: m.offset, max: m.maxOffset, moved: m.offset <> before })
+    else if key = "back"
+        log.debug("textpanel", "back")
+        m.top.closed = true
+    end if
+    return true
+end function

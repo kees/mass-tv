@@ -1,0 +1,131 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Profiles.bs"
+
+' Persistent settings in the Roku registry (section "MassTV"). Values are
+' strings; structured values are stored as JSON.
+namespace store
+
+    const SECTION = "MassTV"
+
+    ' (Not named section(): identifiers are case-insensitive, so it would
+    ' collide with the SECTION constant.)
+    function openSection() as object
+        return CreateObject("roRegistrySection", store.SECTION)
+    end function
+
+    function readString(key as string, fallback = "" as string) as string
+        sec = store.openSection()
+        if sec.Exists(key) then return sec.Read(key)
+        return fallback
+    end function
+
+    sub writeString(key as string, value as string)
+        sec = store.openSection()
+        sec.Write(key, value)
+        sec.Flush()
+    end sub
+
+    function readJson(key as string, fallback = invalid as dynamic) as dynamic
+        raw = store.readString(key, "")
+        if raw = "" then return fallback
+        parsed = ParseJson(raw)
+        if parsed = invalid then return fallback
+        return parsed
+    end function
+
+    sub writeJson(key as string, value as dynamic)
+        store.writeString(key, FormatJson(value))
+    end sub
+
+    sub delete(key as string)
+        sec = store.openSection()
+        sec.Delete(key)
+        sec.Flush()
+    end sub
+
+    ' --- typed accessors ---
+
+    ' The server last used (linked or activated): where linking starts.
+    ' Each profile has its own server (Profiles.bs); before that, this was
+    ' the TV's one server.
+    function server() as string
+        return store.readString("server", "")
+    end function
+
+    sub setServer(url as string)
+        store.writeString("server", url)
+    end sub
+
+    function profileList() as object
+        list = store.readJson("profiles", [])
+        if not util.isArray(list) then list = []
+        ' Profiles saved before each had its own server get the TV's one
+        ' server, once.
+        migrated = profiles.withServers(list, store.server())
+        if migrated.changed then store.setProfileList(migrated.list)
+        return migrated.list
+    end function
+
+    sub setProfileList(list as object)
+        store.writeJson("profiles", list)
+    end sub
+
+    ' The last profile used: its profiles.key (a bare user ID if saved
+    ' before profiles had their own servers).
+    function lastProfile() as string
+        return store.readString("lastProfile", "")
+    end function
+
+    sub setLastProfile(key as string)
+        store.writeString("lastProfile", key)
+    end sub
+
+    ' This TV's player ID on a server (each server names its players), or
+    ' the ID saved before they were kept per server if this server has
+    ' none recorded yet ("" once a stale one was dropped).
+    function playerIdFor(serverUrl as string) as string
+        ids = store.readJson("playerIds", {})
+        if util.isAA(ids) and ids.DoesExist(serverUrl) then return util.str(ids[serverUrl], "")
+        return store.readString("playerId", "")
+    end function
+
+    sub setPlayerIdFor(serverUrl as string, id as string)
+        ids = store.readJson("playerIds", {})
+        if not util.isAA(ids) then ids = {}
+        ids[serverUrl] = id
+        store.writeJson("playerIds", ids)
+    end sub
+
+    function settings() as object
+        s = store.readJson("settings", {})
+        if not util.isAA(s) then s = {}
+        return s
+    end function
+
+    sub setSetting(key as string, value as dynamic)
+        s = store.settings()
+        s[key] = value
+        store.writeJson("settings", s)
+    end sub
+
+    function hintShown(name as string) as boolean
+        h = store.readJson("hints", {})
+        return util.isAA(h) and h[name] = true
+    end function
+
+    sub markHintShown(name as string)
+        h = store.readJson("hints", {})
+        if not util.isAA(h) then h = {}
+        h[name] = true
+        store.writeJson("hints", h)
+    end sub
+
+    sub clearAll()
+        sec = store.openSection()
+        for each k in sec.GetKeyList()
+            sec.Delete(k)
+        end for
+        sec.Flush()
+    end sub
+
+end namespace

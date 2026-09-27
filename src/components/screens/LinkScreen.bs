@@ -1,0 +1,316 @@
+import "pkg:/source/lib/Store.bs"
+import "pkg:/source/lib/Profiles.bs"
+
+const PAIRING_PORT = 8888
+
+sub init()
+    m.logTag = "link"
+    m.qr = m.top.findNode("qr")
+    m.url = m.top.findNode("url")
+    m.status = m.top.findNode("status")
+    m.serverLine = m.top.findNode("serverLine")
+    m.fields = m.top.findNode("fields")
+    m.spinner = m.top.findNode("spinner")
+    m.spinner.poster.uri = "pkg:/images/spinner.png"
+    m.fields.ObserveField("itemSelected", "onButton")
+    m.fields.ObserveField("itemFocused", "onButtonFocused")
+    speakLists([m.fields])
+    m.linkButton = m.top.findNode("linkButton")
+    m.linkButton.buttons = ["Link profile"]
+    m.linkButton.ObserveField("selected", "onLinkButton")
+    ' Center the button under the fields (804 px wide).
+    w = m.linkButton.boundingRect().width
+    m.linkButton.translation = [Int((804 - w) / 2), m.linkButton.translation[1]]
+    m.focusTarget = m.fields
+    m.server = ""
+    m.username = ""
+    ' Held only in memory for this screen, never stored.
+    m.password = ""
+    m.pairing = invalid
+    m.top.ObserveField("params", "onParams")
+    m.top.ObserveField("closing", "onClosing")
+end sub
+
+sub onButtonFocused()
+    i = m.fields.itemFocused
+    n = invalid
+    if m.fields.content <> invalid then n = m.fields.content.getChild(i)
+    if n <> invalid then log.debug("link", "focus", { index: i, label: n.title })
+end sub
+
+' Up and Down wrap through the two fields and the Link profile button.
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    if m.fields.hasFocus() and (key = "down" or key = "up")
+        ' The list passes on Down at its last row and Up at its first:
+        ' either way, the button is next.
+        focusForm(2)
+        return true
+    else if m.linkButton.isInFocusChain() and (key = "down" or key = "up")
+        if key = "down" then focusForm(0) else focusForm(1)
+        return true
+    end if
+    return false
+end function
+
+' Focuses a field (0 profile name, 1 password) or the button (2).
+sub focusForm(target as integer)
+    if target >= 2
+        m.focusTarget = m.linkButton
+    else
+        m.fields.jumpToItem = target
+        m.focusTarget = m.fields
+    end if
+    m.focusTarget.setFocus(true)
+    ' The fields and the button share a group: say the field landed on.
+    if target < 2 then speakListAfresh(m.fields)
+end sub
+
+sub onLinkButton()
+    log.info("link", "button signin")
+    signIn()
+end sub
+
+sub onParams()
+    m.server = util.str(util.get(m.top.params, "server"), "")
+    name = util.str(util.get(m.top.params, "name"), "")
+    m.serverName = name
+    shown = m.server.Replace("http://", "")
+    if name <> "" then shown = name + " · " + shown
+    m.serverLine.text = "on " + shown
+    renderForm(0)
+    setStatus("")
+    startPairing()
+end sub
+
+sub onClosing()
+    m.password = ""
+    stopPairing()
+end sub
+
+' One row per field showing its value. target picks what to focus after
+' the rebuild: a field (0, 1) or the Link profile button (2).
+sub renderForm(target as integer)
+    shownUser = m.username
+    if shownUser = "" then shownUser = "not set"
+    shownPassword = "not set"
+    if m.password <> "" then shownPassword = String(Len(m.password), "•")
+    labels = ["Profile name: " + shownUser, "Password: " + shownPassword]
+    m.buttonIds = ["username", "password"]
+    root = CreateObject("roSGNode", "ContentNode")
+    for each text in labels
+        root.CreateChild("ContentNode").title = text
+    end for
+    m.fields.content = root
+    focusForm(target)
+end sub
+
+' The first field still empty, or Link profile when both are filled.
+function nextFieldIndex() as integer
+    if m.username = "" then return 0
+    if m.password = "" then return 1
+    return 2
+end function
+
+sub startPairing()
+    stopPairing()
+    ips = util.getPath(m.global, "device.ips")
+    ip = ""
+    if util.isArray(ips) and ips.Count() > 0 then ip = ips[0]
+    if ip = ""
+        setStatus("This TV has no network address. Check its network connection.")
+        return
+    end if
+    m.pairing = CreateObject("roSGNode", "PairingTask")
+    m.pairing.config = {
+        port: PAIRING_PORT
+        nonce: util.randomHex(16)
+        rokuIp: ip
+        deviceName: util.str(util.getPath(m.global, "device.name"), "Roku")
+        server: m.server
+    }
+    m.pairing.ObserveField("event", "onPairingEvent")
+    m.pairing.control = "RUN"
+end sub
+
+sub stopPairing()
+    if m.pairing <> invalid
+        m.pairing.stop = true
+        m.pairing.UnobserveField("event")
+        m.pairing = invalid
+    end if
+end sub
+
+sub onPairingEvent(event as object)
+    e = event.GetData()
+    log.info("link", "pairing event " + e.type)
+    if e.type = "listening"
+        m.qr.text = e.url
+        m.url.text = e.url
+    else if e.type = "opened"
+        setStatus("Finish linking on your phone.")
+    else if e.type = "code"
+        stopPairing()
+        finishSignIn(e.code)
+    else if e.type = "error"
+        setStatus(e.message)
+    end if
+end sub
+
+sub onButton()
+    id = m.buttonIds[m.fields.itemSelected]
+    log.info("link", "button " + util.str(id, ""))
+    if id = "username"
+        showKeyboard("Profile name", "Your Music Assistant profile name", m.username, false, "onUserEntered")
+    else if id = "password"
+        who = "your profile"
+        if m.username <> "" then who = "profile " + Chr(34) + m.username + Chr(34)
+        showKeyboard("Password", "Password for " + who, "", true, "onPasswordEntered")
+    end if
+end sub
+
+' --- link with the remote ---
+
+sub onUserEntered(text as string)
+    m.username = text.Trim()
+    renderForm(nextFieldIndex())
+end sub
+
+sub onPasswordEntered(text as string)
+    m.password = text
+    if m.username <> ""
+        signIn()
+    else
+        renderForm(nextFieldIndex())
+    end if
+end sub
+
+sub signIn()
+    if m.username = "" or m.password = ""
+        setStatus("Enter the profile name and password first.")
+        renderForm(nextFieldIndex())
+        return
+    end if
+    renderForm(2)
+    setStatus("Linking…")
+    m.spinner.visible = true
+    args = { username: m.username, password: m.password, device_name: deviceLabel() }
+    apic.call("auth/login", args, onLogin, invalid, { server: m.server, noAuth: true })
+end sub
+
+sub onLogin(resp as object, ctx as dynamic)
+    m.spinner.visible = false
+    data = resp.data
+    token = ""
+    if resp.ok and util.isAA(data) and data.success = true
+        token = util.str(data.access_token, util.str(data.token, ""))
+    end if
+    if token = ""
+        setStatus("Couldn't link: check the profile name and password.")
+        log.warn("link", "keyboard sign-in failed", { status: resp.status })
+        m.password = ""
+        renderForm(1)
+        return
+    end if
+    m.password = ""
+    finishSignIn(token)
+end sub
+
+' --- shared finish: short login token -> profile with long-lived token ---
+
+sub finishSignIn(shortToken as string)
+    setStatus("Finishing linking…")
+    m.spinner.visible = true
+    m.shortToken = shortToken
+    apic.call("auth/me", {}, onMe, invalid, { server: m.server, token: shortToken })
+end sub
+
+sub onMe(resp as object, ctx as dynamic)
+    if not resp.ok or not util.isAA(resp.data)
+        m.spinner.visible = false
+        setStatus("Couldn't read your Music Assistant profile.")
+        return
+    end if
+    m.user = resp.data
+    apic.call("auth/token/create", { name: deviceLabel() }, onLongToken, invalid, { server: m.server, token: m.shortToken })
+end sub
+
+sub onLongToken(resp as object, ctx as dynamic)
+    m.spinner.visible = false
+    token = ""
+    if resp.ok
+        if util.isString(resp.data)
+            token = resp.data
+        else if util.isAA(resp.data)
+            token = util.str(resp.data.token, util.str(resp.data.access_token, ""))
+        end if
+    end if
+    if token = ""
+        ' Keep the login token (30-day sliding, 90-day cap) rather than fail.
+        log.warn("link", "could not create a long-lived token; using the login token", { status: resp.status })
+        token = m.shortToken
+    else
+        apic.call("auth/logout", {}, invalid, invalid, { server: m.server, token: m.shortToken })
+    end if
+    profile = profiles.fromUser(m.user, token, m.server, util.str(m.serverName, ""))
+    log.info("link", "profile ready", { user: profile.username })
+    store.setServer(m.server)
+    m.top.setupDone = profile
+end sub
+
+function deviceLabel() as string
+    return profiles.tokenName(util.getPath(m.global, "device.name"))
+end function
+
+' --- helpers ---
+
+' The screen reader says each new status after what it's saying.
+sub setStatus(text as string)
+    m.status.text = text
+    speech.say(text, false)
+end sub
+
+' A secure keyboard (the password) hides what's typed, spells voice entry
+' letter by letter (keyboardDomain "password"), and adds a button that
+' shows or hides the text. Roku's keyboard has no such toggle of its own;
+' its developer extensions add the same button. The button keeps one label:
+' relabeling a Roku dialog's buttons while it shows can freeze it.
+sub showKeyboard(title as string, message as string, initial as string, secure as boolean, handlerName as string)
+    dlg = CreateObject("roSGNode", "StandardKeyboardDialog")
+    dlg.title = title
+    dlg.message = [message]
+    dlg.text = initial
+    m.kbSecure = secure and dlg.textEditBox <> invalid
+    if m.kbSecure
+        dlg.keyboardDomain = "password"
+        dlg.textEditBox.secureMode = true
+        dlg.buttons = ["OK", "Show / hide password", "Cancel"]
+    else
+        dlg.buttons = ["OK", "Cancel"]
+    end if
+    m.kbHandler = handlerName
+    dlg.ObserveField("buttonSelected", "onKeyboardButton")
+    dlg.ObserveField("wasClosed", "onKeyboardClosed")
+    m.top.getScene().dialog = dlg
+end sub
+
+sub onKeyboardButton(event as object)
+    dlg = m.top.getScene().dialog
+    if m.kbSecure and event.GetData() = 1
+        dlg.textEditBox.secureMode = not dlg.textEditBox.secureMode
+        log.debug("link", "password shown", { shown: not dlg.textEditBox.secureMode })
+        return
+    end if
+    text = dlg.text
+    dlg.close = true
+    if event.GetData() <> 0 then return
+    if m.kbHandler = "onUserEntered"
+        onUserEntered(text)
+    else if m.kbHandler = "onPasswordEntered"
+        onPasswordEntered(text)
+    end if
+end sub
+
+sub onKeyboardClosed()
+    m.focusTarget.setFocus(true)
+end sub

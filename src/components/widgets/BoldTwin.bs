@@ -1,0 +1,34 @@
+' The label fields the twin copies, so it lays its text out exactly as
+' the label does.
+const MIRRORED = "text,font,color,width,height,horizAlign,vertAlign,wrap,maxLines,numLines,lineSpacing,ellipsisText,ellipsizeOnBoundary,displayPartialLines,leadingEllipsis,truncateOnDelimiter,wordBreakChars"
+' How far right each copy is drawn, per point of font size and per copy
+' (`nth`, 1 or 2): two copies thicken the strokes by about 6% of the
+' size, near a real bold's, without leaving a gap (measured against the
+' built Bold weight on the device).
+const OFFSET_PER_SIZE = 0.03
+
+sub init()
+    ' The label itself is read aloud; the copy isn't.
+    m.top.muteAudioGuide = true
+end sub
+
+sub onSource()
+    src = m.top.source
+    if src = invalid then return
+    for each f in MIRRORED.Split(",")
+        src.ObserveFieldScoped(f, "onChange")
+    end for
+    onChange()
+end sub
+
+sub onChange()
+    src = m.top.source
+    if src = invalid then return
+    for each f in MIRRORED.Split(",")
+        v = src.getField(f)
+        if v <> invalid then m.top.setField(f, v)
+    end for
+    size = 27
+    if src.font <> invalid and src.font.size > 1 then size = src.font.size
+    m.top.translation = [size * OFFSET_PER_SIZE * m.top.nth, 0]
+end sub

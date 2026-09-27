@@ -1,0 +1,346 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Aim.bs"
+import "pkg:/source/lib/MaApi.bs"
+import "pkg:/source/lib/Images.bs"
+import "pkg:/source/lib/ApiClient.bs"
+import "pkg:/source/lib/Actions.bs"
+import "pkg:/source/lib/Speech.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+' Shared by every screen. Each screen observes its own `params` field in
+' init() and sets m.focusTarget to the node that should regain focus.
+
+sub onRestoreFocus()
+    if m.focusTarget <> invalid then m.focusTarget.setFocus(true)
+end sub
+
+' Every list and grid reports its focused item here, so the log shows where
+' each key press landed.
+sub onFocusedItem()
+    item = m.top.focusedItem
+    tag = "screen"
+    if util.isString(m.logTag) then tag = m.logTag
+    if not util.isAA(item)
+        log.debug(tag, "focus none")
+        return
+    end if
+    log.debug(tag, "focus " + ma.mediaTypeOf(item), { uri: ma.uriOf(item), name: util.get(item, "name") })
+end sub
+
+sub go(screen as string, params = {} as object)
+    m.top.navigate = { screen: screen, params: params }
+end sub
+
+function server() as string
+    return util.str(util.get(m.global.session, "server"), "")
+end function
+
+' ContentNode for a poster card or track row.
+function itemNode(item as object, imageSize = 256 as integer) as object
+    n = CreateObject("roSGNode", "ContentNode")
+    n.title = ma.titleOf(item)
+    n.description = ma.subtitleOf(item)
+    n.HDPosterUrl = images.urlFor(server(), item, imageSize)
+    n.AddFields({ item: item })
+    return n
+end function
+
+' Opens or plays an item the way OK does everywhere.
+sub openItem(item as dynamic)
+    if not util.isAA(item) then return
+    mt = ma.mediaTypeOf(item)
+    log.debug("screen", "open " + mt, { uri: ma.uriOf(item), name: util.get(item, "name") })
+    if mt = "folder"
+        go("browse", { path: util.str(item.path, ""), title: ma.titleOf(item) })
+    else if mt = "album" or mt = "playlist" or mt = "artist" or mt = "podcast" or mt = "audiobook"
+        go("detail", { item: item })
+    else if ma.isPlayable(item)
+        actions.play(item, "play")
+    end if
+end sub
+
+' --- the screen reader for lists and grids ---
+
+' Roku's own reading of lists was uneven on the device (Roku OS 15.3): a
+' MarkupList skipped each item's title, a grid put its position before
+' the item's second line, and a RowList named the first row only after
+' a row change. So lists speak through speech.say: a screen passes its
+' lists here once, and each says its focused item when it moves or the
+' list gets focus: the row's name (row lists), the item's title and
+' second line, its place, then any help text ("Recently played, Ashes,
+' Josh Woodward, button 3 of 12").
+sub speakLists(lists as object)
+    if m.listSpoken = invalid then m.listSpoken = {}
+    if m.speechLists = invalid
+        m.speechLists = []
+        ' Focus arriving on a list: a list's own focusedChild didn't
+        ' report it in brs-cli (Home at launch said nothing), the screen's
+        ' does. Both are watched; a repeat isn't said twice.
+        m.top.ObserveFieldScoped("focusedChild", "onScreenFocusSpeech")
+    end if
+    for each list in lists
+        m.speechLists.Push(list)
+        list.muteAudioGuide = true
+        list.ObserveFieldScoped("focusedChild", "onListSpeech")
+        if list.subtype() = "RowList"
+            list.ObserveFieldScoped("rowItemFocused", "onListSpeech")
+        else
+            list.ObserveFieldScoped("itemFocused", "onListSpeech")
+        end if
+    end for
+end sub
+
+sub onListSpeech(event as object)
+    speakList(event.getRoSGNode())
+end sub
+
+' For a screen moving the focus onto a list itself, where no focus change
+' may reach speakList in between (lists inside a group): says the list's
+' item even if it was the last thing it said.
+sub speakListAfresh(list as object)
+    if m.listSpoken <> invalid then m.listSpoken.Delete(list.id)
+    speakList(list)
+end sub
+
+sub onScreenFocusSpeech()
+    for each list in m.speechLists
+        speakList(list)
+    end for
+end sub
+
+' Says a list's focused item if the list has focus and it's news. Screens
+' also call it when their items arrive (firstOnly: only if nothing was
+' said yet), for a list focused while it was empty. m.listOpenEnded[list
+' id] = true when more items may still load (the position is then "item
+' 7", not "7 of 60").
+sub speakList(list as object, firstOnly = false as boolean)
+    if m.listSpoken = invalid then m.listSpoken = {}
+    key = list.id
+    if not list.hasFocus()
+        ' Coming back says the row's name (and the item) again.
+        m.listSpoken.Delete(key)
+        return
+    end if
+    content = list.content
+    if content = invalid then return
+    last = m.listSpoken[key]
+    if firstOnly and last <> invalid then return
+    rowTitle = ""
+    if list.subtype() = "RowList"
+        at = list.rowItemFocused
+        ' Before the first move, rowItemFocused can be empty (brs-cli):
+        ' the focused row's first item.
+        if not util.isArray(at) or at.Count() < 2
+            r = list.itemFocused
+            if not util.isInteger(r) or r < 0 then r = 0
+            at = [r, 0]
+        end if
+        rowNode = content.getChild(at[0])
+        if rowNode = invalid then return
+        item = rowNode.getChild(at[1])
+        index = at[1]
+        total = rowNode.getChildCount()
+        ' The row's name when the list gets focus or the row changes.
+        if last = invalid or last.row <> at[0] then rowTitle = util.str(rowNode.title, "")
+        row = at[0]
+    else
+        index = list.itemFocused
+        item = content.getChild(index)
+        total = content.getChildCount()
+        row = 0
+    end if
+    if item = invalid then return
+    second = ""
+    if item.hasField("AUDIO_GUIDE_SUFFIX") then second = util.str(item.AUDIO_GUIDE_SUFFIX, "")
+    if second = "" then second = util.str(item.description, "")
+    chosen = ""
+    if item.hasField("chosen") and item.chosen = true then chosen = "selected"
+    ' "button 3 of 12", as Roku's own lists say it.
+    place = "button " + speech.position(index, total)
+    if util.isAA(m.listOpenEnded) and m.listOpenEnded[key] = true then place = "button " + (index + 1).ToStr()
+    ' A longer help text (Settings' descriptions) goes after the place.
+    hint = ""
+    if item.hasField("speechHint") then hint = util.str(item.speechHint, "")
+    itemText = speech.join([item.title, second, chosen, place, hint])
+    ' The same item said the same way isn't said again (a RowList reports
+    ' its first item twice as it settles; the second, without the row's
+    ' name, would cut the first off).
+    if last <> invalid and last.row = row and last.index = index and last.itemText = itemText then return
+    m.listSpoken[key] = { itemText: itemText, row: row, index: index }
+    text = speech.join([rowTitle, itemText])
+    ' A screen's one-time lead-in (e.g. Search's "12 results").
+    if util.isNonEmptyString(m.listLead)
+        text = speech.join([m.listLead, text])
+        m.listLead = ""
+    end if
+    speech.say(text)
+end sub
+
+' --- item options (the More button on Detail pages and Now Playing) ---
+
+' skip: option ids to leave out, e.g. what a Detail page's buttons already
+' offer ("play", "shuffle", "radio", "favorite").
+sub showItemOptions(item as dynamic, skip = [] as object)
+    if not util.isAA(item) then return
+    m.optItem = item
+    allIds = []
+    allLabels = []
+    ids = allIds
+    labels = allLabels
+    if ma.isPlayable(item)
+        ids.Append(["play", "next", "add"])
+        labels.Append(["Play now", "Play next", "Add to queue"])
+        mt = ma.mediaTypeOf(item)
+        if mt = "album" or mt = "playlist" or mt = "artist"
+            ids.Push("shuffle")
+            labels.Push("Shuffle")
+        end if
+        if mt = "track" or mt = "artist" or mt = "album" or mt = "playlist"
+            ids.Push("radio")
+            labels.Push("Endless mix")
+        end if
+    end if
+    if item.favorite = true
+        ids.Push("unfavorite")
+        labels.Push("Remove from favorites")
+    else if ma.isPlayable(item)
+        ids.Push("favorite")
+        labels.Push("Add to favorites")
+    end if
+    artists = util.get(item, "artists")
+    if util.isArray(artists) and artists.Count() > 0
+        ids.Push("artist")
+        labels.Push("View artist")
+    end if
+    if util.isAA(util.get(item, "album")) and ma.mediaTypeOf(item) = "track"
+        ids.Push("album")
+        labels.Push("View album")
+    end if
+    ' The whole description, which a Detail header cuts to a few lines.
+    kind = ma.mediaTypeOf(item)
+    if (kind = "artist" or kind = "album") and ma.descriptionOf(item) <> ""
+        ids.Push("about")
+        labels.Push("View description")
+    end if
+    ' "favorite" in skip covers both favorite options.
+    ids = []
+    labels = []
+    for i = 0 to allIds.Count() - 1
+        id = allIds[i]
+        key = id
+        if id = "unfavorite" then key = "favorite"
+        left = false
+        for each s in skip
+            if s = key then left = true
+        end for
+        if not left
+            ids.Push(id)
+            labels.Push(allLabels[i])
+        end if
+    end for
+    log.debug("screen", "item options", { uri: ma.uriOf(item), options: ids })
+    if ids.Count() = 0 then return
+    m.optIds = ids
+    showMenu(ma.titleOf(item), labels, onItemOption)
+end sub
+
+sub onItemOption(index as integer)
+    id = m.optIds[index]
+    item = m.optItem
+    log.debug("screen", "option " + id)
+    if id = "play"
+        actions.play(item, "replace")
+    else if id = "next"
+        actions.play(item, "next")
+    else if id = "add"
+        actions.play(item, "add")
+    else if id = "shuffle"
+        actions.play(item, "replace", "", true)
+    else if id = "radio"
+        actions.startRadio(item)
+    else if id = "favorite"
+        actions.favorite(item, true)
+        item.favorite = true
+    else if id = "unfavorite"
+        actions.favorite(item, false)
+        item.favorite = false
+    else if id = "artist"
+        go("detail", { item: item.artists[0] })
+    else if id = "album"
+        album = item.album
+        if album.media_type = invalid then album.media_type = "album"
+        go("detail", { item: album })
+    else if id = "about"
+        showTextPanel(ma.titleOf(item), ma.descriptionOf(item))
+    end if
+end sub
+
+' --- menus of choices (widgets/OptionsMenu) ---
+
+' Shows a menu of choices over the screen; OK closes it and calls
+' handler(index), Back just closes it. Menus of choices use OptionsMenu,
+' not a Roku dialog (ui-idioms); only confirmations stay native.
+sub showMenu(title as string, labels as object, handler as function)
+    closeMenu()
+    menu = CreateObject("roSGNode", "OptionsMenu")
+    menu.title = title
+    menu.items = labels
+    menu.ObserveField("selected", "onMenuSelected")
+    menu.ObserveField("closed", "closeMenu")
+    m.choiceMenu = menu
+    m.choiceHandler = handler
+    watchMenuOwner()
+    m.top.getScene().appendChild(menu)
+    menu.active = true
+end sub
+
+' A menu or panel sits on the scene, above every screen: take it away if
+' this screen is covered by another or removed (e.g. MainScene returns to
+' a root screen) while it shows.
+sub watchMenuOwner()
+    if m.menuWatch <> true
+        m.top.ObserveField("visible", "onMenuOwnerVisible")
+        m.menuWatch = true
+    end if
+end sub
+
+' Shows a long text in full (widgets/TextPanel) over the screen, in the
+' menu's place: Close or Back removes it and refocuses the screen, and it
+' goes away with the screen like a menu.
+sub showTextPanel(title as string, text as string)
+    closeMenu()
+    panel = CreateObject("roSGNode", "TextPanel")
+    panel.title = title
+    panel.text = text
+    panel.ObserveField("closed", "closeMenu")
+    m.choiceMenu = panel
+    watchMenuOwner()
+    m.top.getScene().appendChild(panel)
+    panel.active = true
+end sub
+
+sub onMenuOwnerVisible()
+    if not m.top.visible then dropMenu()
+end sub
+
+sub onMenuSelected()
+    index = m.choiceMenu.selected
+    handler = m.choiceHandler
+    closeMenu()
+    handler(index)
+end sub
+
+sub closeMenu()
+    if m.choiceMenu = invalid then return
+    dropMenu()
+    if m.focusTarget <> invalid then m.focusTarget.setFocus(true)
+end sub
+
+' Removes the menu without refocusing this screen.
+sub dropMenu()
+    if m.choiceMenu = invalid then return
+    log.debug("screen", "menu closed", { title: m.choiceMenu.title })
+    m.top.getScene().removeChild(m.choiceMenu)
+    m.choiceMenu = invalid
+end sub

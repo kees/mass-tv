@@ -1,0 +1,228 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Images.bs"
+
+' Parses the ECP deep-link parameters Music Assistant's roku_media_assistant
+' provider sends (the same contract as the Media Assistant channel), and
+' Mass TV's own debug parameters.
+namespace deeplink
+
+    ' Normalizes raw launch/input params into an action AA:
+    '   { action: "play" | "enqueue" | "stop" | "meta" | "skipToQueued" |
+    '             "debug" | "none" | "reject",
+    '     reason: <why rejected/none>, media: <media AA or invalid>,
+    '     holdQueue: bool, debug: <AA of masstv_* params> }
+    ' allowedHosts: array of lowercase hostnames the stream URL may point at.
+    ' An empty array accepts any host (used before a server is configured).
+    function parse(params as dynamic, allowedHosts as object) as object
+        result = { action: "none", reason: "", media: invalid, holdQueue: false, debug: invalid }
+        if not util.isAA(params)
+            result.reason = "no params"
+            return result
+        end if
+
+        dbg = deeplink.debugParams(params)
+        if dbg.Count() > 0 then result.debug = dbg
+
+        url = util.get(params, "u")
+        if url = invalid then url = util.get(params, "contentId")
+        if url = invalid then url = util.get(params, "contentid")
+        t = LCase(util.str(util.get(params, "t"), ""))
+        a = LCase(util.str(util.get(params, "a"), ""))
+        enqueue = util.toBool(util.get(params, "enqueue"), false)
+        result.holdQueue = util.toBool(util.get(params, "holdQueue"), false)
+
+        if a = "s"
+            result.action = "skipToQueued"
+            return result
+        end if
+
+        if t = "v"
+            result.action = "reject"
+            result.reason = "video not supported"
+            return result
+        end if
+
+        media = deeplink.mediaFromParams(params)
+
+        ' Metadata-only update; a URL with t=m means "play this instead" and
+        ' falls through to the play path below.
+        if t = "m" and not (util.isString(url) and url.Trim() <> "")
+            result.action = "meta"
+            result.media = media
+            return result
+        end if
+
+        if url = invalid
+            if result.debug <> invalid
+                result.action = "debug"
+            else
+                result.reason = "no url"
+            end if
+            return result
+        end if
+
+        if not util.isString(url)
+            result.action = "reject"
+            result.reason = "url not a string"
+            return result
+        end if
+
+        ' MA stops playback by sending u=" ".
+        if url.Trim() = ""
+            if enqueue
+                result.reason = "empty enqueue ignored"
+                return result
+            end if
+            result.action = "stop"
+            return result
+        end if
+
+        parsed = util.parseUrl(url)
+        if parsed = invalid
+            result.action = "reject"
+            result.reason = "unparsable url"
+            return result
+        end if
+        if not deeplink.hostAllowed(parsed.host, allowedHosts)
+            result.action = "reject"
+            result.reason = "host not allowed: " + parsed.host
+            return result
+        end if
+
+        media.url = url
+        media.stream = streamurl.parse(url)
+        media.format = deeplink.formatFor(url, util.get(params, "songFormat"))
+        ' Neither the URL's extension nor MA's songFormat said what it is:
+        ' formatFor fell back to a guess (flac); the player reports it.
+        media.formatGuessed = deeplink.formatFor(url, "?") = "?" and util.str(util.get(params, "songFormat"), "") = ""
+
+        result.media = media
+        if enqueue
+            result.action = "enqueue"
+        else
+            result.action = "play"
+        end if
+        return result
+    end function
+
+    ' Display metadata from params. MA sometimes sends the literal string
+    ' "None" (Python None); treat it as missing.
+    function mediaFromParams(params as object) as object
+        media = {
+            url: ""
+            format: ""
+            title: deeplink.clean(util.get(params, "songName"))
+            artist: deeplink.clean(util.get(params, "artistName"))
+            album: deeplink.clean(util.get(params, "albumName"))
+            art: deeplink.clean(util.get(params, "albumArt"))
+            duration: invalid
+            isLive: util.toBool(util.get(params, "isLive"), false)
+            timeOffset: util.toInt(deeplink.clean(util.get(params, "timeOffset")), invalid)
+            stream: invalid
+        }
+        d = util.toInt(deeplink.clean(util.get(params, "duration")), invalid)
+        if d <> invalid and d > 0 then media.duration = d
+        ' Music Assistant's stand-ins for a missing cover ("default", or its
+        ' own logo) are no cover: Mass TV shows its placeholder instead.
+        if media.art = "default" or images.isStandIn(media.art) then media.art = ""
+        return media
+    end function
+
+    function clean(value as dynamic) as string
+        s = util.str(value, "")
+        if s = "None" or s = "none" or s = "null" then return ""
+        return s
+    end function
+
+    ' The real format comes from the URL extension; MA always claims "flac"
+    ' in songFormat even when the player's codec is set to mp3/aac/wav.
+    function formatFor(url as string, songFormat as dynamic) as string
+        p = util.parseUrl(url)
+        if p <> invalid
+            dot = deeplink.lastIndexOf(p.path, ".")
+            if dot > 0
+                ext = LCase(Mid(p.path, dot + 1))
+                known = { flac: "flac", mp3: "mp3", aac: "aac", m4a: "mp4", mp4: "mp4", wav: "wav", ogg: "ogg", opus: "opus", ts: "hls", m3u8: "hls" }
+                if known.DoesExist(ext) then return known[ext]
+            end if
+        end if
+        f = LCase(util.str(songFormat, ""))
+        if f <> "" then return f
+        return "flac"
+    end function
+
+    function lastIndexOf(s as string, ch as string) as integer
+        last = 0
+        i = Instr(1, s, ch)
+        while i > 0
+            last = i
+            i = Instr(i + 1, s, ch)
+        end while
+        return last
+    end function
+
+    function hostAllowed(host as string, allowedHosts as object) as boolean
+        if allowedHosts = invalid or allowedHosts.Count() = 0 then return true
+        h = LCase(host)
+        for each allowed in allowedHosts
+            if LCase(allowed) = h then return true
+        end for
+        return false
+    end function
+
+    ' Mass TV debug parameters (masstv_*). Honored only in debug builds by
+    ' the caller, e.g. masstv_log=DEBUG, masstv_collector=192.168.1.5:8765.
+    function debugParams(params as object) as object
+        out = {}
+        for each k in params
+            lk = LCase(k)
+            if util.startsWith(lk, "masstv_") then out[Mid(lk, 8)] = params[k]
+        end for
+        return out
+    end function
+
+end namespace
+
+namespace streamurl
+
+    ' Parses an MA stream URL:
+    '   http://<host>:8097/{single|flow}/<session>/<queue>/<queue_item>/<player>.<ext>
+    ' Returns invalid for URLs that do not match (other sources still play).
+    function parse(url as dynamic) as dynamic
+        p = util.parseUrl(url)
+        if p = invalid then return invalid
+        parts = []
+        for each seg in p.path.Split("/")
+            if seg <> "" then parts.Push(seg)
+        end for
+        if parts.Count() < 5 then return invalid
+        mode = parts[0]
+        if mode <> "single" and mode <> "flow" then return invalid
+        last = parts[4]
+        dot = deeplink.lastIndexOf(last, ".")
+        playerId = last
+        ext = ""
+        if dot > 0
+            playerId = Left(last, dot - 1)
+            ext = LCase(Mid(last, dot + 1))
+        end if
+        return {
+            host: p.host
+            port: p.port
+            mode: mode
+            sessionId: parts[1]
+            queueId: parts[2]
+            queueItemId: parts[3]
+            playerId: playerId
+            ext: ext
+        }
+    end function
+
+    ' True when two stream descriptors refer to the same queue item (a seek
+    ' or restart), rather than a new track.
+    function sameItem(a as dynamic, b as dynamic) as boolean
+        if a = invalid or b = invalid then return false
+        return a.queueId = b.queueId and a.queueItemId = b.queueItemId
+    end function
+
+end namespace

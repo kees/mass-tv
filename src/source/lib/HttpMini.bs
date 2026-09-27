@@ -1,0 +1,97 @@
+import "pkg:/source/lib/Util.bs"
+
+' Minimal HTTP/1.0 request parsing and response building for the Roku-side
+' listeners (the setup companion page and the debug log endpoint).
+namespace httpmini
+
+    const MAX_REQUEST_BYTES = 8192
+
+    ' Parses the head of a request. Returns invalid until the blank line that
+    ' ends the headers has arrived; returns { error } for malformed input.
+    function parseRequest(raw as string) as dynamic
+        crlf = Chr(13) + Chr(10)
+        endIdx = Instr(1, raw, crlf + crlf)
+        if endIdx = 0
+            if Len(raw) > httpmini.MAX_REQUEST_BYTES then return { error: "too large" }
+            return invalid
+        end if
+        head = Left(raw, endIdx - 1)
+        lines = head.Split(crlf)
+        if lines.Count() = 0 then return { error: "empty" }
+        first = lines[0].Split(" ")
+        if first.Count() < 2 then return { error: "bad request line" }
+        target = first[1]
+        path = target
+        query = ""
+        q = Instr(1, target, "?")
+        if q > 0
+            path = Left(target, q - 1)
+            query = Mid(target, q + 1)
+        end if
+        headers = {}
+        for i = 1 to lines.Count() - 1
+            colon = Instr(1, lines[i], ":")
+            if colon > 0
+                headers[LCase(Left(lines[i], colon - 1).Trim())] = Mid(lines[i], colon + 1).Trim()
+            end if
+        end for
+        return {
+            method: UCase(first[0])
+            path: util.urlDecode(path)
+            query: util.parseQuery(query)
+            headers: headers
+        }
+    end function
+
+    function response(status as integer, contentType as string, body as string, extra = invalid as dynamic) as string
+        crlf = Chr(13) + Chr(10)
+        reasons = { "200": "OK", "302": "Found", "400": "Bad Request", "403": "Forbidden", "404": "Not Found", "405": "Method Not Allowed", "410": "Gone" }
+        reason = reasons[status.ToStr()]
+        if reason = invalid then reason = "Status"
+        bodyBytes = CreateObject("roByteArray")
+        bodyBytes.FromAsciiString(body)
+        out = "HTTP/1.0 " + status.ToStr() + " " + reason + crlf
+        out = out + "Content-Type: " + contentType + crlf
+        out = out + "Content-Length: " + bodyBytes.Count().ToStr() + crlf
+        out = out + "Cache-Control: no-store" + crlf
+        out = out + "Connection: close" + crlf
+        if util.isAA(extra)
+            for each k in extra
+                out = out + k + ": " + extra[k] + crlf
+            end for
+        end if
+        return out + crlf + body
+    end function
+
+    function redirect(location as string) as string
+        return httpmini.response(302, "text/plain; charset=utf-8", "Redirecting", { Location: location })
+    end function
+
+end namespace
+
+' HTML for the setup companion page served by the Roku.
+namespace pairpage
+
+    function style() as string
+        return "<style>body{font-family:system-ui,sans-serif;background:#101418;color:#eef;margin:0;padding:24px;max-width:520px}" + "h1{font-size:1.4em}input{width:100%;box-sizing:border-box;font-size:1.1em;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #445;background:#1b2128;color:#eef}" + "button{font-size:1.1em;padding:12px 20px;border-radius:8px;border:0;background:#5a8dee;color:#fff}.muted{color:#99a}</style>"
+    end function
+
+    function page(title as string, bodyHtml as string) as string
+        return "<!doctype html><html><head><meta charset=""utf-8""><meta name=""viewport"" content=""width=device-width,initial-scale=1""><title>" + util.htmlEscape(title) + "</title>" + pairpage.style() + "</head><body>" + bodyHtml + "</body></html>"
+    end function
+
+    ' Music Assistant's own login page for the server, naming this TV, which
+    ' hands the result back to callback with ?code=.
+    function loginUrl(server as string, deviceName as string, callback as string) as string
+        return server + "/login?device_name=" + util.urlEncode("Mass TV (" + deviceName + ")") + "&return_url=" + util.urlEncode(callback)
+    end function
+
+    function done(name as string) as string
+        return pairpage.page("Mass TV", "<h1>All set</h1><p>Linked <b>" + util.htmlEscape(name) + "</b>'s profile. You can go back to the TV.</p>")
+    end function
+
+    function message(title as string, text as string) as string
+        return pairpage.page("Mass TV", "<h1>" + util.htmlEscape(title) + "</h1><p>" + util.htmlEscape(text) + "</p>")
+    end function
+
+end namespace

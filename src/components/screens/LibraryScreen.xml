@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component name="LibraryScreen" extends="BaseScreen">
+    <children>
+        <!-- The focus ring behind the tab row's cursor (a tab, the view
+             label, or the sort label); LibraryScreen.bs lays the row out
+             and places it. -->
+        <Poster id="tabRing" uri="pkg:/images/focus_ring.9.png" visible="false" />
+        <Group id="tabs" translation="[96,24]" />
+        <!-- Right-aligned by renderTabs: Sort at the right margin, View to
+             its left (no fixed widths, so their text can be measured). -->
+        <Label id="viewLabel" translation="[1224,28]" color="#9A9FB0" font="font:SmallSystemFont" />
+        <Label id="filter" translation="[1224,28]" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- Two rows take the focus; the grid's clipping rectangle reaches
+             past the screen's bottom, so the next row (which the grid
+             builds anyway, for scrolling) shows there cut off by the
+             screen's edge, as a hint of more. -->
+        <MarkupGrid
+            id="grid"
+            translation="[96,110]"
+            itemComponentName="PosterCard"
+            numColumns="6"
+            numRows="2"
+            itemSize="[240,320]"
+            itemSpacing="[57,40]"
+            itemClippingRect="[0,0,1728,1100]"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <MarkupList
+            id="list"
+            translation="[96,110]"
+            itemComponentName="TrackRow"
+            itemSize="[1728,70]"
+            itemSpacing="[0,4]"
+            numRows="10"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus"
+            visible="false" />
+        <ListFade id="listFade" visible="false" />
+        <Label id="empty" translation="[96,220]" width="1728" color="#9A9FB0" font="font:MediumSystemFont" wrap="true" visible="false" />
+        <LoadingIndicator id="loadingIndicator" translation="[96,130]" />
+    </children>
+</component>

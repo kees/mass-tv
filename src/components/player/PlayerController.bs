@@ -1,0 +1,184 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/DeepLink.bs"
+import "pkg:/source/lib/Playback.bs"
+
+sub init()
+    m.logTag = "player"
+    m.video = m.top.findNode("video")
+    m.video.notificationInterval = 1
+    m.video.ObserveField("state", "onVideoState")
+    m.video.ObserveField("position", "onVideoPosition")
+    m.nextTimer = m.top.findNode("nextTimer")
+    m.nextTimer.ObserveField("fire", "onNextTimeout")
+    m.state = playback.initial()
+    m.lastPublishedPos = -1
+    publish()
+end sub
+
+sub onDeeplink(event as object)
+    params = event.GetData()
+    hosts = m.top.allowedHosts
+    if hosts = invalid then hosts = []
+    result = deeplink.parse(params, hosts)
+    if result.action = "reject"
+        log.warn("player", "deep link rejected", { reason: result.reason })
+        return
+    end if
+    if result.action = "none" or result.action = "debug" then return
+    logMedia = invalid
+    if result.media <> invalid then logMedia = { title: result.media.title, artist: result.media.artist, format: result.media.format, duration: result.media.duration, isLive: result.media.isLive, stream: result.media.stream }
+    log.info("player", "deep link: " + result.action, logMedia)
+    if result.media <> invalid and result.media.formatGuessed = true
+        log.warn("player", "stream format not known (no known extension, no songFormat); guessed", { format: result.media.format, url: result.media.url })
+    end if
+    ' MA answered a play request with a stream.
+    if result.action = "play" then m.global.playPending = {}
+    dispatch({ type: "deeplink", result: result })
+end sub
+
+sub onCommand(event as object)
+    cmd = event.GetData()
+    log.debug("player", "command " + cmd, { status: m.state.status })
+    if cmd = "toggle"
+        eff = playback.toggleEffect(m.state)
+        if eff = "pause"
+            m.video.control = "pause"
+        else if eff = "resume"
+            m.video.control = "resume"
+        end if
+    else if cmd = "pause"
+        m.video.control = "pause"
+    else if cmd = "resume"
+        m.video.control = "resume"
+    else if cmd = "stop"
+        dispatch({ type: "deeplink", result: { action: "stop", media: invalid, holdQueue: false } })
+    else if cmd = "restart"
+        if m.state.current <> invalid then applyEffect({ do: "load", media: m.state.current })
+    end if
+end sub
+
+sub onSeekSent(event as object)
+    dispatch({ type: "seekSent", target: event.GetData() })
+end sub
+
+sub onServerPos(event as object)
+    dispatch({ type: "serverPos", elapsed: event.GetData() })
+end sub
+
+sub onVideoState()
+    st = m.video.state
+    data = { nodeState: st }
+    if st = "error"
+        data.errorMsg = m.video.errorMsg
+        ' (Not "code": the log redactor treats that key as a secret.)
+        log.error("player", "video error", { errorCode: m.video.errorCode, msg: m.video.errorMsg, info: m.video.errorInfo })
+    else
+        log.debug("player", "video state " + st)
+    end if
+    data.type = "node"
+    dispatch(data)
+    updateScreensaver()
+end sub
+
+sub onVideoPosition()
+    publishPosition()
+end sub
+
+sub onNextTimeout()
+    if m.state.awaitingNext then log.warn("player", "MA didn't send the next track; playing the enqueued one")
+    dispatch({ type: "nextTimeout" })
+end sub
+
+sub dispatch(event as object)
+    before = m.state.status
+    r = playback.reduce(m.state, event)
+    m.state = r.state
+    if before <> m.state.status then log.info("player", "status " + before + " -> " + m.state.status)
+    for each fx in r.effects
+        applyEffect(fx)
+    end for
+end sub
+
+sub applyEffect(fx as object)
+    d = fx.do
+    if d = "load" or d = "retry"
+        media = fx.media
+        if d = "retry" then log.warn("player", "retrying stream once")
+        cn = CreateObject("roSGNode", "ContentNode")
+        cn.url = media.url
+        cn.streamFormat = media.format
+        cn.title = media.title
+        if util.isNonEmptyString(media.artist) then cn.Artists = [media.artist]
+        if util.isNonEmptyString(media.album) then cn.Album = media.album
+        if util.isNonEmptyString(media.art) then cn.HDPosterUrl = media.art
+        if media.duration <> invalid then cn.Length = media.duration
+        m.video.control = "stop"
+        m.video.content = cn
+        m.video.control = "play"
+        m.lastPublishedPos = -1
+    else if d = "stop"
+        m.video.control = "stop"
+        m.video.content = invalid
+    else if d = "advance"
+        if m.state.awaitingNext
+            log.info("player", "track ended; asking MA for the next track")
+        else
+            log.warn("player", "giving up on stream; asking MA for the next track", { error: m.state.lastError })
+        end if
+        m.top.advanceRequest = true
+    else if d = "armNextTimeout"
+        m.nextTimer.control = "stop"
+        m.nextTimer.control = "start"
+    else if d = "sync"
+        m.top.syncRequest = true
+    else if d = "changed"
+        publish()
+    end if
+end sub
+
+' Disable the system screensaver while playing (MA sends /launch instead of
+' /input when the screensaver is up); allow it when paused or idle.
+sub updateScreensaver()
+    playing = m.state.status = "playing" or m.state.status = "loading"
+    m.video.disableScreenSaver = playing
+end sub
+
+sub publish()
+    s = m.state
+    np = { status: s.status, error: s.lastError, hasNext: s.pending <> invalid, nextTitle: "", nextArtist: "" }
+    ' MA enqueues the next track right after each play, so this is known
+    ' before the queue poll catches up.
+    if s.pending <> invalid
+        np.nextTitle = s.pending.title
+        np.nextArtist = s.pending.artist
+    end if
+    cur = s.current
+    if cur <> invalid
+        np.title = cur.title
+        np.artist = cur.artist
+        np.album = cur.album
+        np.art = cur.art
+        np.duration = cur.duration
+        np.isLive = cur.isLive
+        if cur.stream <> invalid
+            np.queueItemId = cur.stream.queueItemId
+            np.queueId = cur.stream.queueId
+            np.playerId = cur.stream.playerId
+        end if
+    end if
+    np.position = playback.displayPosition(s, m.video.position)
+    m.global.nowPlaying = np
+end sub
+
+sub publishPosition()
+    curPos = Int(playback.displayPosition(m.state, m.video.position))
+    if curPos = m.lastPublishedPos then return
+    m.lastPublishedPos = curPos
+    np = m.global.nowPlaying
+    if not util.isAA(np) then return
+    np.position = curPos
+    np.status = m.state.status
+    m.global.nowPlaying = np
+    if (curPos mod 30) = 0 then log.trace("player", "position", { position: curPos })
+end sub

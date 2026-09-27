@@ -1,0 +1,67 @@
+' Minimal assertion helpers for off-device unit tests (run with brs-cli).
+namespace tst
+
+    sub begin(suite as string)
+        if m.tstResults = invalid then m.tstResults = { pass: 0, fail: 0, failures: [] }
+        m.tstSuite = suite
+    end sub
+
+    sub eq(actual as dynamic, expected as dynamic, what as string)
+        if tst.same(actual, expected)
+            m.tstResults.pass = m.tstResults.pass + 1
+        else
+            tst.failed(what + ": expected " + tst.show(expected) + ", got " + tst.show(actual))
+        end if
+    end sub
+
+    sub ok(cond as boolean, what as string)
+        if cond
+            m.tstResults.pass = m.tstResults.pass + 1
+        else
+            tst.failed(what)
+        end if
+    end sub
+
+    sub failed(msg as string)
+        m.tstResults.fail = m.tstResults.fail + 1
+        m.tstResults.failures.Push(m.tstSuite + ": " + msg)
+    end sub
+
+    function same(a as dynamic, b as dynamic) as boolean
+        if a = invalid or b = invalid then return a = invalid and b = invalid
+        ta = type(a)
+        tb = type(b)
+        if ta = "roAssociativeArray" or ta = "roArray" or tb = "roAssociativeArray" or tb = "roArray"
+            return FormatJson(a) = FormatJson(b)
+        end if
+        if util.isNumber(a) and util.isNumber(b) then return a = b
+        if util.isString(a) and util.isString(b) then return a = b
+        isBoolA = ta = "Boolean" or ta = "roBoolean"
+        isBoolB = tb = "Boolean" or tb = "roBoolean"
+        if isBoolA and isBoolB then return a = b
+        return false
+    end function
+
+    function show(v as dynamic) as string
+        if v = invalid then return "invalid"
+        tv = type(v)
+        if tv = "roAssociativeArray" or tv = "roArray" then return FormatJson(v)
+        if util.isString(v) then return Chr(34) + v + Chr(34)
+        if util.isNumber(v) then return util.numToStr(v)
+        if tv = "Boolean" or tv = "roBoolean"
+            if v then return "true"
+            return "false"
+        end if
+        return "<" + tv + ">"
+    end function
+
+    function report() as integer
+        r = m.tstResults
+        for each f in r.failures
+            print "FAIL " + f
+        end for
+        print "unit: " + r.pass.ToStr() + " passed, " + r.fail.ToStr() + " failed"
+        return r.fail
+    end function
+
+end namespace

@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "inline-if": "off",
+    "block-if": "off",
+    "condition": "off",
+    "named-function-style": "off",
+    "anon-function-style": "off",
+    "aa-comma-style": "off",
+    "eol-last": "always",
+    "no-print": "off",
+    "no-todo": "off",
+    "no-stop": "error",
+    "unused-variable": "warn",
+    "consistent-return": "error"
+  }
+}

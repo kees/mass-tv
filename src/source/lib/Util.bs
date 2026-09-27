@@ -1,0 +1,291 @@
+' General helpers shared by every thread. Pure functions only, so they can be
+' unit tested off-device with brs-cli.
+namespace util
+
+    function isString(value as dynamic) as boolean
+        t = type(value)
+        return t = "String" or t = "roString"
+    end function
+
+    function isNonEmptyString(value as dynamic) as boolean
+        return util.isString(value) and Len(value) > 0
+    end function
+
+    function isAA(value as dynamic) as boolean
+        return type(value) = "roAssociativeArray"
+    end function
+
+    function isArray(value as dynamic) as boolean
+        return type(value) = "roArray"
+    end function
+
+    ' Boxed integers report "roInt" (e.g. values read back from node fields).
+    function isNumber(value as dynamic) as boolean
+        t = type(value)
+        return t = "Integer" or t = "roInt" or t = "roInteger" or t = "LongInteger" or t = "roLongInteger" or t = "Float" or t = "roFloat" or t = "Double" or t = "roDouble"
+    end function
+
+    function isInteger(value as dynamic) as boolean
+        t = type(value)
+        return t = "Integer" or t = "roInt" or t = "roInteger" or t = "LongInteger" or t = "roLongInteger"
+    end function
+
+    ' Returns value if it is a non-empty string, else fallback.
+    function str(value as dynamic, fallback = "" as string) as string
+        if util.isNonEmptyString(value) then return value
+        if util.isNumber(value) then return util.numToStr(value)
+        return fallback
+    end function
+
+    ' Integer/float to string without the leading space Str() adds.
+    function numToStr(value as dynamic) as string
+        if not util.isNumber(value) then return ""
+        if util.isInteger(value) then return value.ToStr()
+        s = Str(value).Trim()
+        return s
+    end function
+
+    ' Parses a decimal string to an integer; returns fallback when not numeric.
+    function toInt(value as dynamic, fallback = invalid as dynamic) as dynamic
+        if util.isNumber(value) then return Int(value)
+        if not util.isNonEmptyString(value) then return fallback
+        s = value.Trim()
+        if s = "" then return fallback
+        re = CreateObject("roRegex", "^-?[0-9]+(\.[0-9]+)?$", "")
+        if not re.IsMatch(s) then return fallback
+        return Int(Val(s))
+    end function
+
+    ' "true"/"1"/"yes" (any case) -> true; "false"/"0"/"no" -> false; else fallback.
+    function toBool(value as dynamic, fallback = invalid as dynamic) as dynamic
+        if type(value) = "Boolean" or type(value) = "roBoolean" then return value
+        if not util.isNonEmptyString(value) then return fallback
+        s = LCase(value.Trim())
+        if s = "true" or s = "1" or s = "yes" then return true
+        if s = "false" or s = "0" or s = "no" then return false
+        return fallback
+    end function
+
+    function startsWith(s as string, prefix as string) as boolean
+        return Len(s) >= Len(prefix) and Left(s, Len(prefix)) = prefix
+    end function
+
+    function endsWith(s as string, suffix as string) as boolean
+        return Len(s) >= Len(suffix) and Right(s, Len(suffix)) = suffix
+    end function
+
+    ' Seconds -> "m:ss" or "h:mm:ss". Negative or invalid -> "0:00".
+    function formatDuration(seconds as dynamic) as string
+        if not util.isNumber(seconds) then return "0:00"
+        total = Int(seconds)
+        if total < 0 then total = 0
+        h = total \ 3600
+        mins = (total mod 3600) \ 60
+        s = total mod 60
+        ss = util.pad2(s)
+        if h > 0
+            return h.ToStr() + ":" + util.pad2(mins) + ":" + ss
+        end if
+        return mins.ToStr() + ":" + ss
+    end function
+
+    function pad2(n as integer) as string
+        if n < 10 then return "0" + n.ToStr()
+        return n.ToStr()
+    end function
+
+    ' Percent-decodes a URL component ("+" is left alone).
+    ' Runs of %XX escapes are collected as bytes and decoded together, so
+    ' multi-byte UTF-8 sequences come out as the right characters.
+    function urlDecode(s as string) as string
+        if Instr(1, s, "%") = 0 then return s
+        out = ""
+        bytes = CreateObject("roByteArray")
+        i = 1
+        n = Len(s)
+        while i <= n
+            c = Mid(s, i, 1)
+            hex = ""
+            if c = "%" and i + 2 <= n then hex = Mid(s, i + 1, 2)
+            if hex <> "" and util.isHex(hex)
+                bytes.Push(util.hexToInt(hex))
+                i = i + 3
+            else
+                if bytes.Count() > 0
+                    out = out + bytes.ToAsciiString()
+                    bytes = CreateObject("roByteArray")
+                end if
+                out = out + c
+                i = i + 1
+            end if
+        end while
+        if bytes.Count() > 0 then out = out + bytes.ToAsciiString()
+        return out
+    end function
+
+    ' Percent-encodes everything except unreserved characters (RFC 3986).
+    function urlEncode(s as string) as string
+        ba = CreateObject("roByteArray")
+        ba.FromAsciiString(s)
+        out = ""
+        hexDigits = "0123456789ABCDEF"
+        for i = 0 to ba.Count() - 1
+            b = ba[i]
+            if (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b = 45 or b = 46 or b = 95 or b = 126
+                out = out + Chr(b)
+            else
+                out = out + "%" + Mid(hexDigits, (b \ 16) + 1, 1) + Mid(hexDigits, (b mod 16) + 1, 1)
+            end if
+        end for
+        return out
+    end function
+
+    function isHex(s as string) as boolean
+        re = CreateObject("roRegex", "^[0-9A-Fa-f]+$", "")
+        return re.IsMatch(s)
+    end function
+
+    function hexToInt(s as string) as integer
+        v = 0
+        digits = "0123456789abcdef"
+        ls = LCase(s)
+        for i = 1 to Len(ls)
+            v = v * 16 + (Instr(1, digits, Mid(ls, i, 1)) - 1)
+        end for
+        return v
+    end function
+
+    ' Parses "a=1&b=two" into an AA (keys as given, values percent-decoded).
+    function parseQuery(query as string) as object
+        result = {}
+        if query = "" then return result
+        q = query
+        if Left(q, 1) = "?" then q = Mid(q, 2)
+        for each part in q.Split("&")
+            if part <> ""
+                eq = Instr(1, part, "=")
+                if eq > 0
+                    k = util.urlDecode(Left(part, eq - 1).Replace("+", " "))
+                    v = util.urlDecode(Mid(part, eq + 1).Replace("+", " "))
+                else
+                    k = util.urlDecode(part)
+                    v = ""
+                end if
+                result[k] = v
+            end if
+        end for
+        return result
+    end function
+
+    ' Splits a URL into scheme, host, port, path, and query (without "?").
+    ' Returns invalid if it is not an http(s) URL.
+    function parseUrl(url as dynamic) as dynamic
+        if not util.isNonEmptyString(url) then return invalid
+        re = CreateObject("roRegex", "^(https?)://([^/:?#]+|\[[^\]]+\])(:([0-9]+))?([^?#]*)(\?([^#]*))?", "i")
+        groups = re.Match(url)
+        if groups.Count() = 0 then return invalid
+        scheme = LCase(groups[1])
+        port = util.toInt(groups[4], invalid)
+        if port = invalid
+            if scheme = "https"
+                port = 443
+            else
+                port = 80
+            end if
+        end if
+        path = groups[5]
+        if path = "" then path = "/"
+        query = ""
+        if groups.Count() > 7 and groups[7] <> invalid then query = groups[7]
+        return {
+            scheme: scheme
+            host: LCase(groups[2])
+            port: port
+            path: path
+            query: query
+        }
+    end function
+
+    ' "http://host:port" origin of a URL, or "" if unparsable.
+    function originOf(url as dynamic) as string
+        p = util.parseUrl(url)
+        if p = invalid then return ""
+        return p.scheme + "://" + p.host + ":" + p.port.ToStr()
+    end function
+
+    ' Normalizes a user-entered server address to "http://host:port" (no
+    ' trailing slash). Bare hosts get http and port 8095.
+    function normalizeServer(input as dynamic) as string
+        if not util.isNonEmptyString(input) then return ""
+        s = input.Trim()
+        if s = "" then return ""
+        if Instr(1, s, "://") = 0 then s = "http://" + s
+        p = util.parseUrl(s)
+        if p = invalid then return ""
+        hasPort = CreateObject("roRegex", "^https?://[^/]+:[0-9]+", "i").IsMatch(s)
+        port = p.port
+        if not hasPort and p.scheme = "http" then port = 8095
+        return p.scheme + "://" + p.host + ":" + port.ToStr()
+    end function
+
+    ' Shallow copy of an AA.
+    function copyAA(src as dynamic) as object
+        dst = {}
+        if util.isAA(src)
+            for each k in src
+                dst[k] = src[k]
+            end for
+        end if
+        return dst
+    end function
+
+    ' Returns aa[key] if present and not invalid, else fallback. Safe on invalid aa.
+    function get(aa as dynamic, key as string, fallback = invalid as dynamic) as dynamic
+        if not util.isAA(aa) then return fallback
+        v = aa[key]
+        if v = invalid then return fallback
+        return v
+    end function
+
+    ' Follows a dotted path ("a.b.c") through nested AAs and node fields
+    ' (so util.getPath(m.global, "device.ips") works).
+    function getPath(aa as dynamic, path as string, fallback = invalid as dynamic) as dynamic
+        cur = aa
+        for each part in path.Split(".")
+            if type(cur) = "roSGNode"
+                if not cur.hasField(part) then return fallback
+                cur = cur.getField(part)
+            else if util.isAA(cur)
+                cur = cur[part]
+            else
+                return fallback
+            end if
+            if cur = invalid then return fallback
+        end for
+        return cur
+    end function
+
+    ' Random lowercase hex string of n characters.
+    function randomHex(n as integer) as string
+        digits = "0123456789abcdef"
+        out = ""
+        for i = 1 to n
+            out = out + Mid(digits, Rnd(16), 1)
+        end for
+        return out
+    end function
+
+    ' Milliseconds since the Unix epoch (wall clock).
+    function nowMs() as longinteger
+        dt = CreateObject("roDateTime")
+        ms& = dt.AsSeconds()
+        ms& = ms& * 1000 + dt.GetMilliseconds()
+        return ms&
+    end function
+
+    ' Escapes text for inclusion in HTML.
+    function htmlEscape(s as string) as string
+        return s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace(Chr(34), "&quot;").Replace("'", "&#39;")
+    end function
+
+end namespace

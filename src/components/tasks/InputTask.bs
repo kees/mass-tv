@@ -1,0 +1,28 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+
+sub init()
+    m.top.functionName = "runInput"
+end sub
+
+sub runInput()
+    m.logTag = "input"
+    port = CreateObject("roMessagePort")
+    inputObj = CreateObject("roInput")
+    inputObj.SetMessagePort(port)
+    log.info("input", "listening for deep links")
+    while true
+        msg = Wait(0, port)
+        if type(msg) = "roInputEvent" and msg.IsInput()
+            info = msg.GetInfo()
+            log.debug("input", "deep link", { params: redactParams(info) })
+            m.top.input = info
+        end if
+    end while
+end sub
+
+' Stream URLs are capability URLs; keep them in debug logs (they expire with
+' the queue session) but never log anything secret-looking.
+function redactParams(info as dynamic) as dynamic
+    return log.redact(info, 0)
+end function

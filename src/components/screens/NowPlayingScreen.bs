@@ -1,0 +1,296 @@
+sub init()
+    m.logTag = "nowplaying"
+    for each id in ["bgArt", "chrome", "art", "status", "modes", "title", "artist", "album", "barFill", "elapsed", "remaining", "buttons", "upNext", "hint", "ambient", "ambientArt", "ambientText", "drift", "idleTimer"]
+        m[id] = m.top.findNode(id)
+    end for
+    m.barWidth = m.top.findNode("barTrack").width
+    ' Set by render: signed out, only the Play/Pause button shows.
+    m.buttonIds = []
+    m.hintCount = -1
+    m.buttons.ObserveField("selected", "onButton")
+    m.buttons.ObserveField("focusIndex", "resetIdle")
+    m.idleTimer.ObserveField("fire", "enterAmbient")
+    m.global.ObserveFieldScoped("nowPlaying", "render")
+    m.global.ObserveFieldScoped("queueState", "render")
+    m.focusTarget = m.buttons
+    m.ambientOn = false
+    ' Not "", so the first render also sets up a missing cover.
+    m.lastArt = "(none yet)"
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    render()
+    for i = 0 to m.buttonIds.Count() - 1
+        if m.buttonIds[i] = "toggle" then m.buttons.focusIndex = i
+    end for
+    m.idleTimer.control = "start"
+end sub
+
+' Signed out (music MA started before anyone signed in), Mass TV is only a
+' player: everything but pause and resume needs Music Assistant's API.
+function signedIn() as boolean
+    return util.str(util.get(m.global.session, "token"), "") <> ""
+end function
+
+sub render()
+    np = m.global.nowPlaying
+    q = m.global.queueState
+    status = util.str(util.get(np, "status"), "idle")
+    title = util.str(util.get(np, "title"), "")
+    artist = util.str(util.get(np, "artist"), "")
+    album = util.str(util.get(np, "album"), "")
+    art = util.str(util.get(np, "art"), "")
+
+    ' Prefer the server's queue item when it matches what we're playing: it
+    ' has complete metadata, formatted like the track rows (the stream's
+    ' metadata drops the version and uses MA's own artist string).
+    cur = util.get(q, "current_item")
+    if util.isAA(cur) and cur.queue_item_id = util.get(np, "queueItemId")
+        mi = cur.media_item
+        if util.isAA(mi)
+            if ma.titleOf(mi) <> "" then title = ma.titleOf(mi)
+            if ma.artistNames(mi) <> "" then artist = ma.artistNames(mi)
+            if album = "" then album = util.str(util.getPath(mi, "album.name"), "")
+        end if
+        if art = "" then art = images.proxyUrl(server(), cur.image, 1024)
+    end if
+
+    statusText = ""
+    ' The artist line may wrap only for the unlinked hint, which has no
+    ' album line below it to run into.
+    hintWraps = false
+    if status = "paused"
+        statusText = "PAUSED"
+    else if status = "loading"
+        statusText = "LOADING"
+    else if status = "error"
+        statusText = "CAN'T PLAY THIS TRACK"
+    else if status = "idle" or status = "stopped"
+        statusText = "NOTHING PLAYING"
+        if title = ""
+            if signedIn()
+                title = "Pick something from Home, Library, or Search"
+            else
+                title = "Play something from Music Assistant"
+                ' Music Assistant names the player after the Roku, so this
+                ' is the name to look for there.
+                tv = util.str(util.getPath(m.global, "device.name"), "")
+                if tv <> "" and artist = "" then artist = "Add this TV (" + tv + ") as a Player in Music Assistant"
+                hintWraps = true
+            end if
+        end if
+    end if
+    m.status.text = statusText
+    fonts.label(m.title, title, true)
+    if m.artist.wrap <> hintWraps
+        m.artist.wrap = hintWraps
+        if hintWraps then m.artist.maxLines = 2 else m.artist.maxLines = 1
+    end if
+    fonts.label(m.artist, artist)
+    fonts.label(m.album, album)
+    if art <> m.lastArt
+        m.lastArt = art
+        ' All three (cover, ambient cover, blurred backdrop) show the
+        ' placeholder for a missing or failed cover (CoverArt).
+        m.art.uri = art
+        m.ambientArt.uri = art
+        m.bgArt.uri = art
+    end if
+    fonts.label(m.ambientText, title + "  ·  " + artist)
+
+    shown = util.get(np, "position", 0)
+    if m.top.seekPreview >= 0 then shown = m.top.seekPreview
+    dur = util.get(np, "duration")
+    if np <> invalid and np.isLive = true
+        m.elapsed.text = util.formatDuration(shown)
+        m.remaining.text = "LIVE"
+        m.barFill.width = m.barWidth
+    else if util.isNumber(dur) and dur > 0
+        frac = shown / dur
+        if frac > 1 then frac = 1
+        if frac < 0 then frac = 0
+        m.barFill.width = Int(m.barWidth * frac)
+        m.elapsed.text = util.formatDuration(shown)
+        m.remaining.text = "-" + util.formatDuration(dur - shown)
+    else
+        m.barFill.width = 0
+        m.elapsed.text = util.formatDuration(shown)
+        m.remaining.text = ""
+    end if
+
+    ' The track MA enqueued on the player is authoritative and immediate; the
+    ' polled queue lags a track change by up to one poll, so it's only used
+    ' when it describes the item that's actually playing.
+    upNext = ""
+    nextTitle = util.str(util.get(np, "nextTitle"), "")
+    if nextTitle <> ""
+        upNext = nextTitle
+        nextArtist = util.str(util.get(np, "nextArtist"), "")
+        if nextArtist <> "" then upNext = upNext + " · " + nextArtist
+    else if util.isAA(cur) and cur.queue_item_id = util.get(np, "queueItemId")
+        nxt = util.get(q, "next_item")
+        if util.isAA(nxt) then upNext = util.str(nxt.name, "")
+    end if
+    if upNext <> ""
+        fonts.label(m.upNext, "Up next: " + upNext)
+    else
+        m.upNext.text = ""
+    end if
+
+    playLabel = "Pause"
+    if status <> "playing" and status <> "loading" then playLabel = "Play"
+    ' Roku's system font lacks symbols like check marks and triangles, so
+    ' toggle state is shown with words and blue text ("selected").
+    shuffleOn = util.get(q, "shuffle_enabled", false) = true
+    rep = util.str(util.get(q, "repeat_mode"), "off")
+    repeatLabel = "Repeat"
+    if rep = "all" then repeatLabel = "Repeat all"
+    if rep = "one" then repeatLabel = "Repeat one"
+    ' A mode MA adds later shows as MA names it, not as a plain "Repeat".
+    if rep <> "off" and rep <> "all" and rep <> "one" then repeatLabel = "Repeat " + rep
+    liked = util.getPath(cur, "media_item.favorite") = true
+    ' Size hints keep each button in place when its label changes.
+    if signedIn()
+        ' "Favorite", blue when on: the same switch as on Detail pages.
+        m.buttonIds = ["previous", "toggle", "next", "shuffle", "repeat", "favorite", "more"]
+        labels = ["Prev", playLabel, "Next", "Shuffle", repeatLabel, "Favorite", "More"]
+        hints = [[], ["Play", "Pause"], [], [], ["Repeat", "Repeat all", "Repeat one"], [], []]
+        active = [false, false, false, shuffleOn, rep <> "off", liked, false]
+        ' More acts on the playing track: greyed until something is
+        ' loaded (MA's queue keeps its last item after a stop).
+        loaded = status = "playing" or status = "paused" or status = "loading"
+        disabled = [false, false, false, false, false, false, not loaded]
+        m.hint.text = "Play/Pause toggles · Rewind/Fast Forward: tap to seek 10 s, hold to change track"
+    else
+        m.buttonIds = ["toggle"]
+        labels = [playLabel]
+        hints = [["Play", "Pause"]]
+        active = [false]
+        disabled = [false]
+        m.hint.text = "Play/Pause toggles · Back to link a Music Assistant profile"
+    end if
+    ' Only when the set of buttons changes: a new hint rebuilds the row.
+    if m.buttonIds.Count() <> m.hintCount
+        m.hintCount = m.buttonIds.Count()
+        m.buttons.sizeHints = hints
+    end if
+    if not sameLabels(labels)
+        m.buttons.buttons = labels
+    end if
+    m.buttons.active = active
+    m.buttons.disabled = disabled
+
+    modes = []
+    if shuffleOn then modes.Push("SHUFFLE")
+    if rep <> "off" then modes.Push("REPEAT " + UCase(rep))
+    m.modes.text = modes.Join("  ·  ")
+
+    ' The screen reader: the track goes before the focused button when the
+    ' buttons get focus, and a new track is announced while they have it
+    ' (e.g. after Next).
+    statusSaid = "now playing"
+    if statusText <> "" then statusSaid = LCase(statusText)
+    said = speech.join([title, artist, album])
+    m.buttons.context = speech.join([statusSaid, said])
+    if m.saidTrack <> invalid and said <> m.saidTrack and m.buttons.hasFocus() and (status = "playing" or status = "loading")
+        speech.say(speech.join(["now playing", said]), false)
+    end if
+    m.saidTrack = said
+end sub
+
+function sameLabels(labels as object) as boolean
+    old = m.buttons.buttons
+    if old = invalid or old.Count() <> labels.Count() then return false
+    for i = 0 to labels.Count() - 1
+        if old[i] <> labels[i] then return false
+    end for
+    return true
+end function
+
+sub onButton()
+    id = m.buttonIds[m.buttons.selected]
+    q = m.global.queueState
+    log.debug("nowplaying", "button " + id)
+    if id = "previous"
+        actions.queueCommand("player_queues/previous")
+    else if id = "toggle"
+        status = util.str(util.get(m.global.nowPlaying, "status"), "idle")
+        if status = "playing" or status = "paused" or status = "loading"
+            m.global.player.command = "toggle"
+        else
+            actions.queueCommand("player_queues/play")
+        end if
+    else if id = "next"
+        actions.queueCommand("player_queues/next")
+    else if id = "shuffle"
+        actions.queueCommand("player_queues/shuffle", { shuffle_enabled: not (util.get(q, "shuffle_enabled", false) = true) })
+    else if id = "repeat"
+        modes = { off: "all", all: "one", one: "off" }
+        nextMode = modes[util.str(util.get(q, "repeat_mode"), "off")]
+        if nextMode = invalid then nextMode = "all"
+        actions.queueCommand("player_queues/repeat", { repeat_mode: nextMode })
+    else if id = "favorite"
+        mi = util.getPath(q, "current_item.media_item")
+        if util.isAA(mi) then actions.favorite(mi, not (mi.favorite = true))
+    else if id = "more"
+        ' The current track's options, minus what this screen's buttons do
+        ' or what makes no sense for the playing track.
+        mi = util.getPath(q, "current_item.media_item")
+        if util.isAA(mi) then showItemOptions(mi, ["play", "next", "add", "favorite"])
+    end if
+end sub
+
+sub enterAmbient()
+    if m.ambientOn then return
+    ' Not over an open menu or panel: wait for the next idle minute.
+    if m.choiceMenu <> invalid
+        m.idleTimer.control = "start"
+        return
+    end if
+    status = util.str(util.get(m.global.nowPlaying, "status"), "idle")
+    if status <> "playing" and status <> "paused"
+        m.idleTimer.control = "start"
+        return
+    end if
+    log.debug("nowplaying", "ambient on")
+    m.ambientOn = true
+    m.chrome.visible = false
+    m.ambient.visible = true
+    m.bgArt.opacity = 0.1
+    m.drift.control = "start"
+    m.top.ambient = true
+    ' Move focus off the buttons so every key (including OK and arrows,
+    ' which they would consume) bubbles to onKeyEvent to wake up. Focusing
+    ' m.top wouldn't work: it's already in the focus chain as their parent,
+    ' so focus would stay on the buttons.
+    m.ambient.setFocus(true)
+end sub
+
+sub exitAmbient()
+    if not m.ambientOn then return
+    log.debug("nowplaying", "ambient off")
+    m.ambientOn = false
+    m.drift.control = "stop"
+    m.ambient.visible = false
+    m.chrome.visible = true
+    m.bgArt.opacity = 0.08
+    m.top.ambient = false
+    m.buttons.setFocus(true)
+end sub
+
+sub resetIdle()
+    m.idleTimer.control = "stop"
+    m.idleTimer.control = "start"
+end sub
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    resetIdle()
+    if m.ambientOn
+        exitAmbient()
+        ' Swallow the wake-up press unless it is a transport key.
+        return not (key = "play" or key = "rewind" or key = "fastforward" or key = "replay")
+    end if
+    return false
+end function

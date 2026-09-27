@@ -1,0 +1,348 @@
+import "pkg:/source/lib/Store.bs"
+import "pkg:/source/lib/Mdns.bs"
+
+' Seconds each mDNS query listens for answers, and between queries.
+const DISCOVERY_SECONDS = 3
+const REDISCOVER_SECONDS = 10
+
+sub init()
+    m.logTag = "setup"
+    m.servers = m.top.findNode("servers")
+    m.top.findNode("serversFade").list = m.servers
+    m.discovery = m.top.findNode("discovery")
+    m.address = m.top.findNode("address")
+    m.actions = m.top.findNode("actions")
+    m.status = m.top.findNode("status")
+    m.nowPlaying = m.top.findNode("nowPlaying")
+    m.spinner = m.top.findNode("spinner")
+    m.spinner.poster.uri = "pkg:/images/spinner.png"
+    m.servers.ObserveField("itemSelected", "onServerChosen")
+    m.servers.ObserveField("itemFocused", "onServerFocused")
+    m.address.ObserveField("itemSelected", "onAddressSelected")
+    speakLists([m.servers, m.address])
+    m.actions.ObserveField("selected", "onAction")
+    m.nowPlaying.buttons = ["Now Playing"]
+    m.nowPlaying.ObserveField("selected", "onNowPlaying")
+    m.top.findNode("unlinkedNote").text = "Music Assistant can play to this TV" + tvNameInParens() + " without a linked profile."
+    ' Center the button under the note (1728 px wide).
+    w = m.nowPlaying.boundingRect().width
+    m.nowPlaying.translation = [Int((1728 - w) / 2), m.nowPlaying.translation[1]]
+    m.server = ""
+    ' The chosen server's name, when it came from the list.
+    m.serverName = ""
+    ' Servers found so far ({ id, name, server }), kept across queries.
+    m.found = []
+    m.searched = false
+    m.discoveryTask = invalid
+    m.timer = CreateObject("roSGNode", "Timer")
+    m.timer.duration = REDISCOVER_SECONDS
+    m.timer.ObserveField("fire", "startDiscovery")
+    ' Until the first key press, finding servers may move focus to them.
+    m.touched = false
+    m.top.ObserveField("params", "onParams")
+    m.top.ObserveField("closing", "onClosing")
+    m.top.ObserveField("visible", "onVisible")
+end sub
+
+' Discovery runs only while this screen shows (the link screen or Now
+' Playing on top of it hides it); coming back asks again at once.
+sub onVisible()
+    if m.top.visible
+        startDiscovery()
+    else
+        m.timer.control = "stop"
+    end if
+end sub
+
+' " (Living Room)" with this Roku's own name, or "" if it has none.
+function tvNameInParens() as string
+    name = util.str(util.getPath(m.global, "device.name"), "")
+    if name = "" then return ""
+    return " (" + name + ")"
+end function
+
+sub onParams()
+    m.server = util.str(util.get(m.top.params, "server"), store.server())
+    m.canCancel = store.profileList().Count() > 0
+    labels = ["Link"]
+    if m.canCancel then labels.Push("Cancel")
+    m.actions.buttons = labels
+    renderAddress()
+    renderServers()
+    if m.server = ""
+        focusOn(m.address)
+    else
+        m.actions.focusIndex = 0
+        focusOn(m.actions)
+    end if
+    startDiscovery()
+end sub
+
+sub onClosing()
+    m.timer.control = "stop"
+    if m.discoveryTask <> invalid
+        m.discoveryTask.UnobserveField("result")
+        m.discoveryTask = invalid
+    end if
+end sub
+
+' The address row's field and the server list log their focus here (the
+' ButtonRows log their own).
+sub focusOn(node as object)
+    m.focusTarget = node
+    node.setFocus(true)
+    if node.isSameNode(m.address)
+        log.debug("setup", "focus", { label: "address" })
+    else if node.isSameNode(m.servers)
+        onServerFocused()
+    end if
+    ' The lists share a group, so the screen's focus change doesn't reach
+    ' them from inside it: say where the cursor landed here.
+    if node.isSameNode(m.address) or node.isSameNode(m.servers) then speakListAfresh(node)
+end sub
+
+' --- discovery ---
+
+sub startDiscovery()
+    if m.discoveryTask <> invalid or not m.top.visible then return
+    m.discoveryTask = CreateObject("roSGNode", "MdnsTask")
+    m.discoveryTask.ObserveField("result", "onDiscovered")
+    req = { name: "_mass._tcp.local", type: "PTR", seconds: DISCOVERY_SECONDS }
+    if util.isNonEmptyString(m.global.discoveryTarget) then req.to = m.global.discoveryTarget
+    m.discoveryTask.request = req
+    m.discoveryTask.control = "RUN"
+end sub
+
+sub onDiscovered()
+    r = m.discoveryTask.result
+    m.discoveryTask.UnobserveField("result")
+    m.discoveryTask = invalid
+    fresh = mdns.massServers(r.replies)
+    added = 0
+    for each s in fresh
+        known = false
+        for each f in m.found
+            if f.id = s.id then known = true
+        end for
+        if not known
+            m.found.Push(s)
+            added = added + 1
+        end if
+    end for
+    if added > 0
+        m.found.SortBy("name", "i")
+        log.info("setup", "servers found", { count: m.found.Count(), servers: m.found })
+    end if
+    m.searched = true
+    renderServers()
+    ' Nothing chosen and no key pressed yet: offer the list.
+    if added > 0 and not m.touched and m.server = "" then focusOn(m.servers)
+    if r.ok and m.top.visible then m.timer.control = "start"
+end sub
+
+' The list of servers, the one matching the address in blue. Rebuilt only
+' when servers were added (focus stays on the same server); otherwise the
+' rows are updated in place, so the list keeps its scroll position.
+sub renderServers()
+    content = m.servers.content
+    if content <> invalid and content.getChildCount() = m.found.Count()
+        for i = 0 to m.found.Count() - 1
+            content.getChild(i).chosen = m.found[i].server = m.server
+        end for
+    else
+        focusedId = ""
+        if content <> invalid
+            n = content.getChild(m.servers.itemFocused)
+            if n <> invalid then focusedId = n.id
+        end if
+        root = CreateObject("roSGNode", "ContentNode")
+        target = 0
+        for i = 0 to m.found.Count() - 1
+            s = m.found[i]
+            n = root.CreateChild("ContentNode")
+            n.id = s.id
+            n.title = s.name + " · " + s.server.Replace("http://", "")
+            n.AddField("chosen", "boolean", false)
+            n.chosen = s.server = m.server
+            if s.id = focusedId then target = i
+        end for
+        m.servers.content = root
+        if target > 0 then m.servers.jumpToItem = target
+    end if
+    speakList(m.servers, true)
+    if m.found.Count() > 0
+        m.discovery.text = ""
+    else if m.searched
+        text = "No Music Assistant found on your network. Enter its address below."
+        if m.discovery.text <> text then speech.say(text, false)
+        m.discovery.text = text
+    else
+        m.discovery.text = "Looking for Music Assistant on your network…"
+    end if
+end sub
+
+sub renderAddress()
+    shown = m.server.Replace("http://", "")
+    if shown = "" then shown = "Press OK to enter it"
+    root = CreateObject("roSGNode", "ContentNode")
+    row = root.CreateChild("ContentNode")
+    row.title = shown
+    speech.setSuffix(row, "Music Assistant server address")
+    m.address.content = root
+end sub
+
+sub onServerFocused()
+    i = m.servers.itemFocused
+    if i >= 0 and i < m.found.Count() then log.debug("setup", "focus", { server: m.found[i].name, index: i })
+end sub
+
+' A server from the list fills the address; the cursor moves on to Link.
+sub onServerChosen()
+    i = m.servers.itemSelected
+    if i < 0 or i >= m.found.Count() then return
+    s = m.found[i]
+    log.info("setup", "server chosen", { name: s.name, server: s.server })
+    setServer(s.server, s.name)
+    m.actions.focusIndex = 0
+    focusOn(m.actions)
+end sub
+
+sub setServer(url as string, name as string)
+    m.server = url
+    m.serverName = name
+    renderAddress()
+    renderServers()
+    setStatus("")
+end sub
+
+' --- keys: Up/Down wrap through the list, the address row, and the Now
+' Playing area; Left/Right move along the address row ---
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    m.touched = true
+    hasList = m.found.Count() > 0
+    onRow = m.address.isInFocusChain() or m.actions.isInFocusChain()
+    if key = "right" and m.address.isInFocusChain()
+        m.actions.focusIndex = 0
+        focusOn(m.actions)
+        return true
+    else if key = "left" and m.actions.isInFocusChain()
+        focusOn(m.address)
+        return true
+    else if key = "down"
+        ' The lists pass Down on at their last row and Up at their first.
+        if m.servers.isInFocusChain()
+            focusOn(m.address)
+        else if onRow
+            focusOn(m.nowPlaying)
+        else if hasList
+            m.servers.jumpToItem = 0
+            focusOn(m.servers)
+        else
+            focusOn(m.address)
+        end if
+        return true
+    else if key = "up"
+        if m.servers.isInFocusChain()
+            focusOn(m.nowPlaying)
+        else if onRow and hasList
+            m.servers.jumpToItem = m.found.Count() - 1
+            focusOn(m.servers)
+        else if onRow
+            focusOn(m.nowPlaying)
+        else
+            focusOn(m.address)
+        end if
+        return true
+    end if
+    return false
+end function
+
+' --- the address row ---
+
+sub onAddressSelected()
+    log.info("setup", "button server")
+    showKeyboard("Music Assistant address", "For example 192.168.1.10:8095", m.server.Replace("http://", ""))
+end sub
+
+sub onAction()
+    if m.actions.selected = 1
+        log.info("setup", "button cancel")
+        m.top.navigate = { screen: "profiles", params: {}, root: true }
+        return
+    end if
+    log.info("setup", "button link")
+    if m.server = ""
+        setStatus("Choose a server above, or enter its address.")
+        focusOn(m.address)
+        return
+    end if
+    ' It must answer as Music Assistant before the link screen opens.
+    setStatus("Checking " + m.server.Replace("http://", "") + "…")
+    m.spinner.visible = true
+    apic.getPath("/info", onInfoChecked, { server: m.server }, m.server)
+end sub
+
+sub onInfoChecked(resp as object, ctx as object)
+    m.spinner.visible = false
+    if ctx.server <> m.server then return
+    if not resp.ok or not util.isAA(resp.data) or not util.isNonEmptyString(util.get(resp.data, "server_id"))
+        setStatus("Couldn't reach Music Assistant at " + ctx.server.Replace("http://", "") + ".")
+        return
+    end if
+    setStatus("")
+    name = m.serverName
+    if name = "" then name = util.str(util.get(resp.data, "name"), "")
+    log.info("setup", "server ok", { server: ctx.server, version: util.get(resp.data, "server_version") })
+    m.top.navigate = { screen: "link", params: { server: ctx.server, name: name } }
+end sub
+
+sub onNowPlaying()
+    log.info("setup", "button nowplaying")
+    ' On top of this screen, so Back returns here (linking can go on).
+    m.top.navigate = { screen: "nowplaying", params: {} }
+end sub
+
+' --- helpers ---
+
+' The screen reader says each new status after what it's saying.
+sub setStatus(text as string)
+    m.status.text = text
+    speech.say(text, false)
+end sub
+
+sub showKeyboard(title as string, message as string, initial as string)
+    dlg = CreateObject("roSGNode", "StandardKeyboardDialog")
+    dlg.title = title
+    dlg.message = [message]
+    dlg.text = initial
+    dlg.buttons = ["OK", "Cancel"]
+    dlg.ObserveField("buttonSelected", "onKeyboardButton")
+    dlg.ObserveField("wasClosed", "onKeyboardClosed")
+    m.top.getScene().dialog = dlg
+end sub
+
+sub onKeyboardButton(event as object)
+    dlg = m.top.getScene().dialog
+    text = dlg.text
+    dlg.close = true
+    if event.GetData() <> 0 then return
+    url = util.normalizeServer(text)
+    if url = ""
+        setStatus("That doesn't look like an address.")
+        return
+    end if
+    ' Typed to match a server in the list: keep its name.
+    name = ""
+    for each s in m.found
+        if s.server = url then name = s.name
+    end for
+    setServer(url, name)
+    m.actions.focusIndex = 0
+    m.focusTarget = m.actions
+end sub
+
+sub onKeyboardClosed()
+    m.focusTarget.setFocus(true)
+end sub

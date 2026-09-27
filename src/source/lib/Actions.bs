@@ -1,0 +1,133 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/MaApi.bs"
+import "pkg:/source/lib/ApiClient.bs"
+import "pkg:/source/lib/Images.bs"
+
+' Render-thread playback and library actions shared by screens.
+namespace actions
+
+    function playerQueueId() as string
+        s = m.global.session
+        pid = util.str(util.get(s, "playerId"), "")
+        if pid = ""
+            np = m.global.nowPlaying
+            pid = util.str(util.get(np, "queueId"), "")
+        end if
+        return pid
+    end function
+
+    function schema() as integer
+        return util.toInt(util.get(m.global.session, "schema"), 0)
+    end function
+
+    ' option: "replace" (default), "play", "next", "add". sortBy: see
+    ' ma.playMediaArgs.
+    ' shown: the item to name in the Now Playing bar while MA starts it
+    ' (e.g. the track picked on a playlist page); defaults to item.
+    sub play(item as dynamic, option = "replace" as string, startItem = "" as string, shuffle = false as boolean, sortBy = "" as string, shown = invalid as dynamic)
+        media = item
+        if util.isAA(item) then media = ma.uriOf(item)
+        if not util.isNonEmptyString(media)
+            actions.toast("That item can't be played.")
+            return
+        end if
+        qid = actions.playerQueueId()
+        if qid = ""
+            actions.toast("This TV isn't set up as a Music Assistant player yet.")
+            log.warn("actions", "play without player id", { media: media })
+            return
+        end if
+        args = ma.playMediaArgs(qid, media, option, startItem, shuffle, actions.schema(), sortBy)
+        log.info("actions", "play_media", args)
+        if option = "replace" or option = "play"
+            if not util.isAA(shown) then shown = item
+            m.global.playPending = actions.pendingInfo(shown)
+        end if
+        apic.call("player_queues/play_media", args, actions.onResult, { what: "play" })
+        if option = "next" then actions.toast("Playing next")
+        if option = "add" then actions.toast("Added to queue")
+    end sub
+
+    ' What the Now Playing bar shows while a play request waits for MA. The
+    ' cover URL is the one track rows use (80 px), so it's usually in
+    ' Roku's texture cache already and shows at once.
+    function pendingInfo(shown as dynamic) as object
+        info = { sentAt: util.nowMs(), title: "", artist: "", art: "" }
+        if not util.isAA(shown) then return info
+        ' The same two lines as the item's row, and as the bar once playing.
+        info.title = ma.titleOf(shown)
+        info.artist = ma.subtitleOf(shown)
+        info.art = images.urlFor(util.str(util.get(m.global.session, "server"), ""), shown, 80)
+        return info
+    end function
+
+    sub startRadio(item as dynamic)
+        uri = ma.radioUri(item)
+        if uri = ""
+            actions.toast("Can't start an endless mix from this.")
+            return
+        end if
+        actions.play(uri, "replace", "", false, "", item)
+        actions.toast("Starting endless mix")
+    end sub
+
+    sub queueCommand(command as string, extra = invalid as dynamic)
+        qid = actions.playerQueueId()
+        if qid = "" then return
+        ' Signed out there's no server to ask (the player plays MA's queued
+        ' next track by itself when a track ends).
+        if util.str(util.get(m.global.session, "token"), "") = ""
+            log.debug("actions", command + " skipped: signed out")
+            return
+        end if
+        args = { queue_id: qid }
+        if util.isAA(extra)
+            for each k in extra
+                args[k] = extra[k]
+            end for
+        end if
+        log.info("actions", command, args)
+        apic.call(command, args, actions.onResult, { what: command })
+    end sub
+
+    sub favorite(item as dynamic, makeFavorite as boolean)
+        log.info("actions", "favorite", { add: makeFavorite, uri: ma.uriOf(item), type: ma.mediaTypeOf(item), name: util.str(util.get(item, "name"), "") })
+        if makeFavorite
+            apic.call("music/favorites/add_item", { item: ma.uriOf(item) }, actions.onResult, { what: "favorite" })
+            actions.toast("Added to favorites")
+        else
+            ' Removal needs the library id.
+            args = { media_type: ma.mediaTypeOf(item), item_id: util.str(item.item_id, ""), provider_instance_id_or_domain: util.str(item.provider, "library") }
+            apic.call("music/get_library_item", args, actions.onLibraryItemForUnfavorite, { item: item })
+        end if
+    end sub
+
+    sub onLibraryItemForUnfavorite(resp as object, ctx as object)
+        lib = resp.data
+        if not resp.ok or not util.isAA(lib)
+            actions.toast("Couldn't update favorites.")
+            return
+        end if
+        log.debug("actions", "unfavorite library item", { uri: util.str(lib.uri, ""), name: util.str(lib.name, "") })
+        apic.call("music/favorites/remove_item", { media_type: ma.mediaTypeOf(ctx.item), library_item_id: util.str(lib.item_id, "") }, actions.onResult, { what: "unfavorite" })
+        actions.toast("Removed from favorites")
+    end sub
+
+    sub onResult(resp as object, ctx as object)
+        ' Refresh the queue soon after any command that changes it.
+        m.global.pollKick = true
+        if resp.ok then return
+        if ctx.what = "play" then m.global.playPending = {}
+        log.warn("actions", ctx.what + " failed", { status: resp.status, kind: resp.kind, error: resp.error })
+        command = util.str(resp.command, ctx.what)
+        if ctx.what = "play" then command = "player_queues/play_media"
+        msg = ma.errorMessage(resp.kind, command, resp.error)
+        if msg <> "" then actions.toast(msg)
+    end sub
+
+    sub toast(text as string)
+        m.global.toast = text
+    end sub
+
+end namespace

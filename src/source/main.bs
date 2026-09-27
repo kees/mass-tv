@@ -1,0 +1,138 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Store.bs"
+
+' Channel entry point. Launch params (deep links from Music Assistant) are
+' handed to the scene; roInput deep links while running arrive via InputTask.
+sub Main(args as dynamic)
+    screen = CreateObject("roSGScreen")
+    port = CreateObject("roMessagePort")
+    screen.SetMessagePort(port)
+
+    g = screen.GetGlobalNode()
+    ' The main thread has no m.global by default; log.* needs it for the level.
+    m.global = g
+    setupGlobals(g, args)
+
+    scene = screen.CreateScene("MainScene")
+    screen.Show()
+    ' Observe only after Show(): registered before it, the event never
+    ' reached this port on the device (Roku OS 15.3).
+    scene.ObserveField("exitRequested", port)
+    scene.launchArgs = args
+    ' Kept referenced so their events keep arriving.
+    monitors = startMemoryMonitoring(port)
+
+    while true
+        msg = Wait(0, port)
+        if type(msg) = "roSGNodeEvent"
+            log.debug("app", "main event " + type(msg), { field: msg.GetField(), data: msg.GetData() })
+        else if isMemoryWarning(msg)
+            log.warn("app", "memory warning", { event: type(msg), info: msg.GetInfo(), availableKb: memoryAvailable(monitors) })
+        else
+            log.debug("app", "main event " + type(msg))
+        end if
+        if type(msg) = "roSGScreenEvent" and msg.IsScreenClosed() then return
+        ' Node field names are case-insensitive; compare them that way.
+        if type(msg) = "roSGNodeEvent" and LCase(msg.GetField()) = "exitrequested" and msg.GetData() = true then return
+    end while
+end sub
+
+' Watches the app's memory: logs its limit at launch, and every warning
+' Roku OS sends when the app nears that limit or the device runs low.
+function startMemoryMonitoring(port as object) as object
+    monitors = { app: CreateObject("roAppMemoryMonitor"), device: CreateObject("roDeviceInfo") }
+    if monitors.app <> invalid
+        monitors.app.SetMessagePort(port)
+        monitors.app.EnableMemoryWarningEvent(true)
+        log.info("app", "memory", { limit: monitors.app.GetChannelMemoryLimit(), availableKb: monitors.app.GetChannelAvailableMemory(), usedPercent: monitors.app.GetMemoryLimitPercent() })
+    end if
+    if monitors.device <> invalid
+        monitors.device.SetMessagePort(port)
+        monitors.device.EnableLowGeneralMemoryEvent(true)
+    end if
+    return monitors
+end function
+
+' roDeviceInfoEvent also reports other changes (e.g. caption mode); only
+' the ones with a generalMemoryLevel are about memory.
+function isMemoryWarning(msg as dynamic) as boolean
+    if type(msg) = "roAppMemoryNotificationEvent" then return true
+    if type(msg) <> "roDeviceInfoEvent" then return false
+    info = msg.GetInfo()
+    return util.isAA(info) and info.generalMemoryLevel <> invalid
+end function
+
+function memoryAvailable(monitors as object) as dynamic
+    if monitors.app = invalid then return invalid
+    return monitors.app.GetChannelAvailableMemory()
+end function
+
+sub setupGlobals(g as object, args as dynamic)
+    debugBuild = false
+    #if DEBUG
+        debugBuild = true
+    #end if
+
+    di = CreateObject("roDeviceInfo")
+    ips = []
+    addrs = di.GetIPAddrs()
+    for each k in addrs
+        ips.Push(addrs[k])
+    end for
+
+    ' Log level: debug builds default to DEBUG, release to WARN. A stored
+    ' override (settings.logLevel) or a masstv_log launch param wins.
+    level = 2
+    if debugBuild then level = 4
+    settings = store.settings()
+    if util.isNonEmptyString(settings.logLevel) then level = log.levelFromName(settings.logLevel, level)
+    if util.isAA(args) and debugBuild and util.isNonEmptyString(args.masstv_log) then level = log.levelFromName(args.masstv_log, level)
+
+    ' Where the server screen sends its mDNS queries: "" for the mDNS
+    ' group; tests send them to their fake Music Assistant instead, so
+    ' they need no network.
+    discoveryTarget = ""
+    if util.isAA(args) and debugBuild and util.isNonEmptyString(args.masstv_mdns_to) then discoveryTarget = args.masstv_mdns_to
+
+    appInfo = CreateObject("roAppInfo")
+    g.AddField("logTask", "node", false)
+    g.AddField("api", "node", false)
+    g.AddField("player", "node", false)
+    g.AddField("toast", "string", true)
+    g.AddField("currentScreen", "string", false)
+    g.AddField("pollKick", "boolean", true)
+    g.AddFields({
+        debugBuild: debugBuild
+        logLevel: level
+        discoveryTarget: discoveryTarget
+        device: {
+            name: di.GetFriendlyName()
+            model: di.GetModel()
+            modelName: di.GetModelDisplayName()
+            osVersion: di.GetOSVersion()
+            ' The TV signal (e.g. "1080p") and the resolution apps are
+            ' drawn at (an FHD app is scaled on an HD UI), and the network.
+            videoMode: di.GetVideoMode()
+            uiResolution: di.GetUIResolution()
+            connection: di.GetConnectionType()
+            ' Roku's screen reader, as the app started (for the log).
+            audioGuide: di.IsAudioGuideEnabled()
+            ips: ips
+            appVersion: appInfo.GetVersion()
+            devId: appInfo.GetDevID()
+            ' "dev" when sideloaded, else the channel ID: what MA's
+            ' roku_app_id must name.
+            appId: appInfo.GetID()
+        }
+        session: {}
+        clockOffset: 0
+        nowPlaying: { status: "idle" }
+        ' Set while a play request is on its way to MA (actions.play), until
+        ' MA's stream reaches the player or the request fails.
+        playPending: {}
+        queueState: {}
+    })
+    m.logTag = "main"
+    log.info("app", "launch", { debug: debugBuild, level: log.levelName(level), device: g.device, args: args })
+end sub

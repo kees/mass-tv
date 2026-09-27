@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Linking a Music Assistant profile on the server chosen on the server
+     screen (params { server, name }): with the TV's remote (profile name
+     and password, on the right), or with a phone via the QR code (on the
+     left), which leads to that server's own login page. Both side by
+     side, in equal halves split at the screen's center under a centered
+     title. Emits setupDone with the new profile. -->
+<component name="LinkScreen" extends="BaseScreen">
+    <interface>
+        <field id="setupDone" type="assocarray" alwaysNotify="true" />
+    </interface>
+    <children>
+        <!-- Screens sit 96 px down, below the nav bar; this one has none, so
+             the title uses that space and everything below moves up. -->
+        <Label id="heading" text="Link Music Assistant Profile" translation="[0,-56]" width="1920" horizAlign="center" color="#EEEEF6">
+            <Font role="font" uri="font:BoldSystemFontFile" size="64" />
+        </Label>
+        <!-- The chosen server, set from params. -->
+        <Label id="serverLine" translation="[0,24]" width="1920" horizAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+
+        <!-- Right half: x 1020 to 1824 (804 wide). -->
+        <Group translation="[1020,110]">
+            <Label text="with your TV" width="804" horizAlign="center" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+            <!-- Profile name and Password (MenuRow: full-width pills). -->
+            <MarkupList
+                id="fields"
+                translation="[0,70]"
+                itemComponentName="MenuRow"
+                itemSize="[804,64]"
+                itemSpacing="[0,8]"
+                numRows="2"
+                drawFocusFeedback="false"
+                vertFocusAnimationStyle="floatingFocus" />
+            <!-- Link profile: a button sized to its text, centered under the
+                 fields (x set in init from its width). -->
+            <ButtonRow id="linkButton" translation="[0,222]" minWidth="160" />
+            <Label text="Mass TV doesn't save your password. It's sent once to Music Assistant for a link token, which is all this TV stores." translation="[24,330]" width="780" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" />
+            <Label id="status" translation="[24,500]" width="780" height="90" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" />
+        </Group>
+
+        <!-- The split, at the screen's center. -->
+        <Rectangle color="#2A313B" translation="[959,110]" width="2" height="780" />
+
+        <!-- Left half: x 96 to 900 (804 wide). -->
+        <Group translation="[96,110]">
+            <Label text="with your phone" width="804" horizAlign="center" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+            <!-- The code's top lines up with the Profile name field's (y 70);
+                 it is as big as fits above the three lines of text, whose
+                 last one ends 96 px above the screen's bottom (the same as
+                 the text's left margin). Centered in the half:
+                 (804 - 531) / 2. -->
+            <QrView id="qr" translation="[136,70]" size="531" />
+            <Label text="Scan the code or browse to:" translation="[0,641]" width="804" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" />
+            <Label id="url" translation="[0,693]" width="804" color="#5A8DEE" font="font:SmallBoldSystemFont" />
+            <Label text="To open Music Assistant for linking your profile." translation="[0,745]" width="804" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" />
+        </Group>
+
+        <BusySpinner id="spinner" translation="[1700,60]" visible="false" />
+    </children>
+</component>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings: the profile's rows, a gap, then the server's and this TV's
+     rows (two MarkupLists of MenuRow, Up/Down moving between them). The
+     right column shows the focused row's description at the top, the
+     logo centered in the content area (between the nav bar and the Now
+     Playing bar), and the About text under the logo. -->
+<component name="SettingsScreen" extends="BaseScreen">
+    <children>
+        <Label text="Settings" translation="[96,24]" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+        <MarkupList
+            id="profileRows"
+            translation="[96,100]"
+            itemComponentName="MenuRow"
+            itemSize="[1000,64]"
+            itemSpacing="[0,8]"
+            numRows="3"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <!-- Below the three profile rows (3 x 72 - 8 = 208) and a blank
+             row's gap. -->
+        <MarkupList
+            id="tvRows"
+            translation="[96,372]"
+            itemComponentName="MenuRow"
+            itemSize="[1000,64]"
+            itemSpacing="[0,8]"
+            numRows="7"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+
+        <!-- Right column: x 1150 to 1824 (674 wide). -->
+        <!-- Four lines fit above the logo's drawing (it starts at y 304);
+             keep descriptions that short (about 170 characters). -->
+        <Label id="detail" translation="[1150,100]" width="674" wrap="true" maxLines="4" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- The logo (its drawing only: the image is trimmed, so it
+             covers nothing beside it) at 200x246, centered at (1487,
+             440), the middle of the column and of the content area (0 to
+             880, above the Now Playing bar); small enough to leave room
+             for the six lines below it. The image is made at that size
+             per UI resolution ($$RES$$, the manifest's
+             uri_resolution_autosub), since Roku shrinks images without
+             smoothing. -->
+        <Poster id="logo" uri="pkg:/images/logo_settings_$$RES$$.png" translation="[1387,317]" width="200" height="246" />
+        <!-- Two lines (version, tagline), then after a gap four about this
+             Roku (name, hardware, OS, screen and network); they end above
+             the Now Playing bar (880). -->
+        <Label id="about" translation="[1150,574]" width="674" horizAlign="center" wrap="true" color="#9A9FB0" font="font:SmallSystemFont" />
+        <Label id="device" translation="[1150,680]" width="674" horizAlign="center" wrap="true" color="#9A9FB0" font="font:SmallSystemFont" />
+    </children>
+</component>

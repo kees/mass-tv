@@ -1,0 +1,227 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/DeepLink.bs"
+
+' Pure player state machine for the MA player role.
+'
+' playback.reduce(state, event) returns { state, effects } and never touches
+' nodes. PlayerController applies the effects to the Video node and the API.
+'
+' state:
+'   status:     "idle" | "loading" | "playing" | "paused" | "error" | "stopped"
+'   current:    media AA (from deeplink.parse) or invalid
+'   pending:    the enqueued next media, or invalid
+'   holdQueue:  do not auto-advance to pending
+'   offset:     seconds to add to the node position for display
+'   seekTarget: target of a server seek we initiated, or invalid
+'   retries:    local retries used for the current media
+'   needsSync:  true when the offset must come from the server queue
+'   awaitingNext: a track ended and we asked MA for the next one
+'
+' Track changes: when a track ends, we ask MA for the next track rather
+' than playing the enqueued item ourselves. MA's Roku provider can only
+' infer a Roku-side advance from a >10 s position jump, which it misses
+' (e.g. after a seek near the end), leaving MA's queue out of step. If MA
+' doesn't answer (nextTimeout), we fall back to the enqueued item.
+'
+' events (type field):
+'   deeplink    { result }            result of deeplink.parse
+'   node        { nodeState, errorMsg }
+'   seekSent    { target }            we asked MA to seek (server seek)
+'   serverPos   { elapsed }           server elapsed time for the current item
+'   nextTimeout                       MA didn't send the next track in time
+'
+' effects (do field):
+'   load { media }, stop, pause, resume, retry { media },
+'   advance (ask MA for the next track), sync (poll now),
+'   armNextTimeout (start the fallback timer), changed (the published
+'   now-playing info changed)
+namespace playback
+
+    const MAX_RETRIES = 1
+
+    function initial() as object
+        return {
+            status: "idle"
+            current: invalid
+            pending: invalid
+            holdQueue: false
+            offset: 0
+            seekTarget: invalid
+            retries: 0
+            needsSync: false
+            awaitingNext: false
+            lastError: ""
+        }
+    end function
+
+    function reduce(state as object, event as object) as object
+        s = util.copyAA(state)
+        fx = []
+        et = event.type
+        if et = "deeplink"
+            playback.onDeeplink(s, event.result, fx)
+        else if et = "node"
+            playback.onNode(s, event, fx)
+        else if et = "seekSent"
+            s.seekTarget = event.target
+        else if et = "serverPos"
+            if s.needsSync and util.isNumber(event.elapsed)
+                s.offset = event.elapsed
+                s.needsSync = false
+                fx.Push({ do: "changed" })
+            end if
+        else if et = "nextTimeout"
+            if s.awaitingNext
+                s.awaitingNext = false
+                if s.pending <> invalid
+                    nextMedia = s.pending
+                    s.pending = invalid
+                    playback.startMedia(s, nextMedia, fx)
+                else
+                    s.status = "idle"
+                    fx.Push({ do: "changed" })
+                end if
+            end if
+        end if
+        return { state: s, effects: fx }
+    end function
+
+    sub onDeeplink(s as object, r as object, fx as object)
+        action = r.action
+        if action = "play"
+            playback.startMedia(s, r.media, fx)
+        else if action = "enqueue"
+            s.pending = r.media
+            s.holdQueue = r.holdQueue
+            fx.Push({ do: "changed" })
+        else if action = "stop"
+            s.status = "stopped"
+            s.current = invalid
+            s.pending = invalid
+            s.seekTarget = invalid
+            s.offset = 0
+            fx.Push({ do: "stop" })
+            fx.Push({ do: "changed" })
+        else if action = "meta"
+            if s.current <> invalid
+                cur = util.copyAA(s.current)
+                for each k in ["title", "artist", "album", "art"]
+                    v = r.media[k]
+                    if util.isNonEmptyString(v) then cur[k] = v
+                end for
+                if r.media.duration <> invalid then cur.duration = r.media.duration
+                if r.media.timeOffset <> invalid then s.offset = r.media.timeOffset
+                cur.isLive = r.media.isLive
+                s.current = cur
+                fx.Push({ do: "changed" })
+            end if
+        else if action = "skipToQueued"
+            if s.pending <> invalid
+                nextMedia = s.pending
+                s.pending = invalid
+                playback.startMedia(s, nextMedia, fx)
+            end if
+        end if
+    end sub
+
+    sub startMedia(s as object, media as object, fx as object)
+        restart = false
+        if s.current <> invalid then restart = streamurl.sameItem(s.current.stream, media.stream)
+        if restart
+            ' Same queue item, new stream: a seek or restart by MA. MA sends
+            ' the remaining length after a seek as the duration; keep the
+            ' track's full duration from the original stream.
+            if s.current.duration <> invalid
+                media = util.copyAA(media)
+                media.duration = s.current.duration
+            end if
+            if s.seekTarget <> invalid
+                s.offset = s.seekTarget
+                s.needsSync = false
+            else if media.timeOffset <> invalid
+                s.offset = media.timeOffset
+                s.needsSync = false
+            else
+                s.offset = 0
+                s.needsSync = true
+                fx.Push({ do: "sync" })
+            end if
+            ' Keep the enqueued next item. MA re-sends it after a seek (seen
+            ' with the 2026-09 nightly), but keeping it covers a lost one.
+        else
+            s.offset = 0
+            if media.timeOffset <> invalid then s.offset = media.timeOffset
+            s.needsSync = false
+            s.pending = invalid
+        end if
+        s.seekTarget = invalid
+        s.awaitingNext = false
+        s.current = media
+        s.retries = 0
+        s.status = "loading"
+        s.lastError = ""
+        fx.Push({ do: "load", media: media })
+        fx.Push({ do: "changed" })
+    end sub
+
+    sub onNode(s as object, event as object, fx as object)
+        ns = event.nodeState
+        if ns = "playing"
+            if s.status <> "playing"
+                s.status = "playing"
+                fx.Push({ do: "changed" })
+            end if
+        else if ns = "paused"
+            if s.status <> "paused"
+                s.status = "paused"
+                fx.Push({ do: "changed" })
+            end if
+        else if ns = "buffering"
+            if s.status <> "loading" and s.status <> "paused"
+                s.status = "loading"
+                fx.Push({ do: "changed" })
+            end if
+        else if ns = "finished"
+            if s.pending <> invalid and not s.holdQueue
+                ' Let MA drive the change (see the header); the enqueued item
+                ' is the fallback if MA doesn't answer.
+                s.awaitingNext = true
+                s.status = "loading"
+                fx.Push({ do: "advance" })
+                fx.Push({ do: "armNextTimeout" })
+                fx.Push({ do: "changed" })
+            else
+                s.status = "idle"
+                fx.Push({ do: "changed" })
+            end if
+        else if ns = "error"
+            s.lastError = util.str(event.errorMsg, "playback error")
+            if s.current <> invalid and s.retries < playback.MAX_RETRIES
+                s.retries = s.retries + 1
+                s.status = "loading"
+                fx.Push({ do: "retry", media: s.current })
+            else
+                s.status = "error"
+                fx.Push({ do: "advance" })
+            end if
+            fx.Push({ do: "changed" })
+        else if ns = "stopped"
+            ' The node stops between tracks; only "stop" deep links change status.
+        end if
+    end sub
+
+    ' Position to display for a node position.
+    function displayPosition(state as object, nodePosition as dynamic) as double
+        nodePos = 0
+        if util.isNumber(nodePosition) then nodePos = nodePosition
+        return state.offset + nodePos
+    end function
+
+    ' The Play key toggles; this picks the node command.
+    function toggleEffect(state as object) as string
+        if state.status = "playing" or state.status = "loading" then return "pause"
+        if state.status = "paused" then return "resume"
+        return ""
+    end function
+
+end namespace

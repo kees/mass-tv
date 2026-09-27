@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- MarkupList item for track lists and the queue. Content nodes carry
+     title, description, ShortDescriptionLine1 (index or "now playing"),
+     ShortDescriptionLine2 (duration), and HDPosterUrl (cover art). A
+     content field noArt = true drops the cover column (album pages, where
+     every row would repeat the album's cover). The list creates rows only
+     for what's on screen and reuses them as it scrolls, so covers load on
+     demand. -->
+<component name="TrackRow" extends="Group">
+    <interface>
+        <field id="itemContent" type="node" onChange="onContent" />
+        <field id="width" type="float" onChange="onSize" />
+        <field id="height" type="float" />
+        <field id="focusPercent" type="float" onChange="onFocus" />
+        <field id="itemHasFocus" type="boolean" onChange="onFocus" />
+        <!-- Set by MarkupList; the highlight shows only while the list itself
+             has focus (not, e.g., while the buttons above it do). -->
+        <field id="listHasFocus" type="boolean" onChange="onFocus" />
+    </interface>
+    <children>
+        <!-- Rows are 70 px tall; the lists space them 4 px apart. The focus
+             highlight: the list's gray inside the rounded blue focus ring. -->
+        <Poster id="bg" uri="pkg:/images/focus_row.9.png" width="1600" height="70" opacity="0" />
+        <Label id="index" translation="[16,0]" width="80" height="70" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- A 66 px cover leaves 8 px between the covers of adjacent rows.
+             The box shows while a cover loads; a dim Mass TV emblem shows
+             when there is none or it fails to load (CoverArt). -->
+        <CoverArt id="art" translation="[100,2]" width="66" loadSize="80" boxColor="#2A313B" placeholderUri="pkg:/images/placeholder_row.png" />
+        <!-- Measured on the device (1080p): the title's ink spans y+3 to
+             y+31 (descenders included) and the subtitle's y+2 to y+26, so
+             these positions leave a 5 px gap between the lines, centered
+             in the row. -->
+        <Label id="title" translation="[100,4]" width="1200" height="32" color="#EEEEF6" font="font:SmallBoldSystemFont" />
+        <Label id="subtitle" translation="[100,39]" width="1200" height="28" color="#9A9FB0" font="font:SmallestSystemFont" />
+        <Label id="duration" translation="[1400,0]" width="180" height="70" vertAlign="center" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" />
+    </children>
+</component>

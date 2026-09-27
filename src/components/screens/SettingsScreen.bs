@@ -1,0 +1,309 @@
+import "pkg:/source/lib/Store.bs"
+import "pkg:/source/lib/Profiles.bs"
+import "pkg:/source/lib/Jwt.bs"
+
+' Where users get help (the project's GitHub issues) and read the privacy
+' policy and terms.
+const SUPPORT_SITE = "github.com/kees/mass-tv"
+const LEGAL_SITE = "saturnianpress.com/mass-tv"
+
+sub init()
+    m.logTag = "settings"
+    m.profileRows = m.top.findNode("profileRows")
+    m.tvRows = m.top.findNode("tvRows")
+    m.detail = m.top.findNode("detail")
+    m.top.findNode("about").text = aboutText()
+    m.top.findNode("device").text = deviceText()
+    for each list in [m.profileRows, m.tvRows]
+        list.ObserveField("itemSelected", "onSelected")
+        list.ObserveField("itemFocused", "onFocused")
+    end for
+    speakLists([m.profileRows, m.tvRows])
+    m.focusTarget = m.profileRows
+    m.profileEntries = []
+    m.tvEntries = []
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    build()
+    ' The player ID can arrive after Settings opens (the lookup at
+    ' startup or linking): show it when it does.
+    if m.watchingSession <> true
+        m.global.ObserveFieldScoped("session", "onSession")
+        m.watchingSession = true
+    end if
+end sub
+
+sub onSession()
+    s = m.global.session
+    pid = util.str(util.get(s, "playerId"), "")
+    if pid <> util.str(m.shownPlayerId, "") and util.isAA(s) and s.Count() > 0 then build()
+end sub
+
+' Rebuilds both lists (labels show current values), keeping focus where
+' it was.
+sub build()
+    s = m.global.session
+    settings = store.settings()
+    name = util.str(util.get(s, "displayName"), "this profile")
+    m.profileEntries = [
+        { id: "switch", label: "Switch profile", detail: "" }
+        { id: "add", label: "Link another profile", detail: "Link another person's Music Assistant profile. Each profile uses that person's own account and music services." }
+        { id: "remove", label: "Unlink this profile", detail: "Unlinks " + name + " from this TV and revokes its access." }
+    ]
+    m.tvEntries = []
+    m.tvEntries.Push({ id: "server", label: "Server: " + util.str(util.get(s, "server"), "(none)"), detail: "Music Assistant " + util.str(util.get(s, "serverVersion"), "?") + " (API schema " + util.str(util.get(s, "schema"), "?") + "), this profile's server." + Chr(10) + "Each profile has its own server: link another profile to add one." })
+    pid = util.str(util.get(s, "playerId"), "")
+    m.shownPlayerId = pid
+    if pid = "" then pid = "not found yet"
+    appId = util.str(util.getPath(m.global, "device.appId"), "dev")
+    m.tvEntries.Push({ id: "player", label: "This TV's player: " + pid, detail: "In Music Assistant, add the Media Assistant (Roku) player provider with app ID " + appId + " to play here. Select to look up this TV's player again." })
+    strict = settings.strictStreamHosts <> false
+    strictLabel = "Only play streams from this server: on"
+    if not strict then strictLabel = "Only play streams from this server: off"
+    m.tvEntries.Push({ id: "strict", label: strictLabel, isOn: strict, detail: "When on, Mass TV plays only streams from your Music Assistant server. Turn it off only if your server streams from a different address." })
+    if m.global.debugBuild
+        ip = ""
+        ips = util.getPath(m.global, "device.ips")
+        if util.isArray(ips) and ips.Count() > 0 then ip = ips[0]
+        m.tvEntries.Push({ id: "loglevel", label: "Log level: " + log.levelName(m.global.logLevel), detail: "Debug build. Logs: http://" + ip + ":8889/ (also /log?since=N and /state). Select to cycle the level." })
+        collector = util.str(settings.logCollector, "")
+        if collector = "" then collector = "off"
+        m.tvEntries.Push({ id: "collector", label: "Log collector: " + collector, detail: "Push logs to a collector (tools/log_collector.py). Set it with a deep link: masstv_collector=host:port. Select to turn it off." })
+    end if
+    m.tvEntries.Push({ id: "reset", label: "Forget everything", detail: "Removes the server and all linked profiles from this TV." })
+    ' Where to get help (Roku's distribution agreement, Exhibit A 3.4:
+    ' support contact easily found in the app).
+    m.tvEntries.Push({ id: "support", label: "Help and support: " + SUPPORT_SITE, detail: "Questions, problems, or ideas? Open an issue on GitHub, at the address on this row. Select for details to include." })
+    fill(m.profileRows, m.profileEntries)
+    fill(m.tvRows, m.tvEntries)
+    onFocused()
+    ' A row's label that changed under the cursor (a switch) is said.
+    speakList(current().list)
+end sub
+
+' Switches that are on (blue, the "selected" idiom) set isOn: true.
+sub fill(list as object, entries as object)
+    focused = list.itemFocused
+    root = CreateObject("roSGNode", "ContentNode")
+    for each e in entries
+        n = root.CreateChild("ContentNode")
+        n.title = e.label
+        n.AddField("chosen", "boolean", false)
+        n.chosen = util.get(e, "isOn", false) = true
+        ' The screen reader says the row's description (shown at the
+        ' right) after its place.
+        speech.setHint(n, e.detail)
+    end for
+    list.content = root
+    if focused > 0 and focused < entries.Count() then list.jumpToItem = focused
+end sub
+
+' The focused list and its entries.
+function current() as object
+    if m.tvRows.isInFocusChain() then return { list: m.tvRows, entries: m.tvEntries }
+    return { list: m.profileRows, entries: m.profileEntries }
+end function
+
+' Up and Down cross between the two lists (each passes Down on at its
+' last row and Up at its first); Up from the first row goes on to the nav
+' bar (MainScene).
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    if key = "down" and m.profileRows.hasFocus()
+        m.tvRows.jumpToItem = 0
+        m.focusTarget = m.tvRows
+        m.tvRows.setFocus(true)
+        onFocused()
+        return true
+    else if key = "up" and m.tvRows.hasFocus()
+        m.profileRows.jumpToItem = m.profileEntries.Count() - 1
+        m.focusTarget = m.profileRows
+        m.profileRows.setFocus(true)
+        onFocused()
+        return true
+    end if
+    return false
+end function
+
+function aboutText() as string
+    return "Version " + versionText() + Chr(10) + "A Roku client and player for Music Assistant."
+end function
+
+' "1.0.2 (debug build)"
+function versionText() as string
+    kind = "release"
+    if m.global.debugBuild then kind = "debug"
+    return util.str(m.global.device.appVersion, "?") + " (" + kind + " build)"
+end function
+
+' Roku's video mode code with a known HDR suffix spelled out:
+' "2160p60Dv" -> "2160p60 Dolby Vision"; anything else as Roku gave it.
+function videoModeText(mode as string) as string
+    found = CreateObject("roRegex", "^([0-9]+[pi][0-9]*)(.*)$", "").Match(mode)
+    if found.Count() < 3 or found[2] = "" then return mode
+    names = { dv: "Dolby Vision", hdr10: "HDR10", hdr10plus: "HDR10+", hlg: "HLG" }
+    name = names[LCase(found[2])]
+    if name = invalid then return mode
+    return found[1] + " " + name
+end function
+
+' This Roku, a line each: its name; its hardware and network; its
+' software; its screen.
+function deviceText() as string
+    return deviceLines().Join(Chr(10))
+end function
+
+function deviceLines() as object
+    dev = m.global.device
+    os = dev.osVersion
+    osText = util.str(util.get(os, "major"), "?") + "." + util.str(util.get(os, "minor"), "?") + "." + util.str(util.get(os, "revision"), "?")
+    osBuild = util.str(util.get(os, "build"), "")
+    if osBuild <> "" then osText = osText + " build " + osBuild
+    hardware = util.str(dev.modelName, "Roku") + " (" + util.str(dev.model, "?") + ")"
+    ' The network: known kinds by name, anything else as Roku gave it.
+    conn = util.str(dev.connection, "")
+    if conn = "WiFiConnection"
+        hardware = hardware + " · Wi-Fi"
+    else if conn = "WiredConnection"
+        hardware = hardware + " · Wired"
+    else if conn <> ""
+        hardware = hardware + " · " + conn
+    end if
+    lines = [util.str(dev.name, "Roku"), hardware, "Roku OS " + osText]
+    ' e.g. "1080p TV · 1280x720 UI": the UI resolution is what apps are
+    ' drawn at (an FHD app is scaled to fit an HD UI).
+    screen = []
+    mode = videoModeText(util.str(dev.videoMode, ""))
+    if mode <> "" then screen.Push(mode + " TV")
+    ui = dev.uiResolution
+    if util.isAA(ui) and util.isNumber(ui.width) then screen.Push(ui.width.ToStr() + "x" + ui.height.ToStr() + " UI")
+    if screen.Count() > 0 then lines.Push(screen.Join(" · "))
+    return lines
+end function
+
+sub onFocused()
+    c = current()
+    e = c.entries[c.list.itemFocused]
+    if e = invalid then return
+    m.detail.text = e.detail
+    log.debug("settings", "focus " + e.id)
+end sub
+
+sub onSelected()
+    c = current()
+    e = c.entries[c.list.itemSelected]
+    if e = invalid then return
+    log.info("settings", "select " + e.id)
+    if e.id = "switch"
+        m.top.navigate = { screen: "profiles", params: {}, root: true }
+    else if e.id = "add"
+        m.top.navigate = { screen: "setup", params: { server: store.server() }, root: true }
+    else if e.id = "remove"
+        confirm("Unlink this profile from this TV?", "remove")
+    else if e.id = "player"
+        apic.call("players/all", {}, onPlayers)
+    else if e.id = "strict"
+        store.setSetting("strictStreamHosts", not (store.settings().strictStreamHosts <> false))
+        m.global.toast = "Takes effect when a profile is next chosen."
+        build()
+    else if e.id = "loglevel"
+        lvl = m.global.logLevel + 1
+        if lvl > log.LEVEL_TRACE then lvl = log.LEVEL_ERROR
+        m.global.logLevel = lvl
+        store.setSetting("logLevel", log.levelName(lvl))
+        build()
+    else if e.id = "collector"
+        store.setSetting("logCollector", "")
+        lt = m.global.logTask
+        if lt <> invalid then lt.config = { collector: "" }
+        build()
+    else if e.id = "reset"
+        confirm("Forget the server and every linked profile on this TV?", "reset")
+    else if e.id = "support"
+        showTextPanel("Help and support", supportText())
+    end if
+end sub
+
+' What the Help and support panel says: where to go, and the details a
+' problem report needs (the About and device lines, without the Roku's
+' own name, plus the server's version). An address ends its line, with
+' no period after it, which would look like part of it.
+function supportText() as string
+    lf = Chr(10)
+    text = "Mass TV is open source. To report a problem, ask a question, or suggest an idea, open an issue on GitHub:" + lf + SUPPORT_SITE + lf + lf
+    details = ["Mass TV " + versionText()]
+    lines = deviceLines()
+    for i = 1 to lines.Count() - 1
+        details.Push(lines[i])
+    end for
+    ver = util.str(util.get(m.global.session, "serverVersion"), "")
+    if ver <> "" then details.Push("Music Assistant " + ver)
+    text = text + "Please include:" + lf + details.Join(lf) + lf + lf
+    text = text + "Privacy policy and terms:" + lf + LEGAL_SITE
+    return text
+end function
+
+sub onPlayers(resp as object, ctx as dynamic)
+    if not resp.ok
+        m.global.toast = "Couldn't reach Music Assistant."
+        return
+    end if
+    dev = m.global.device
+    p = ma.findRokuPlayer(resp.data, dev.ips, util.str(dev.name, ""))
+    s = m.global.session
+    if p = invalid
+        log.warn("settings", "this Roku is not among the server's players", { myIps: dev.ips, players: ma.playerSummary(resp.data) })
+        stale = util.str(util.get(s, "playerId"), "")
+        if stale <> "" and not ma.hasPlayer(resp.data, stale)
+            s.playerId = ""
+            m.global.session = s
+            store.setPlayerIdFor(util.str(s.server, ""), "")
+        end if
+        m.global.toast = "This TV isn't a Music Assistant player yet."
+        return
+    end if
+    s.playerId = p.player_id
+    m.global.session = s
+    store.setPlayerIdFor(util.str(s.server, ""), p.player_id)
+    m.global.toast = "Found player " + p.player_id
+    build()
+end sub
+
+' A Roku dialog on purpose: its change of look makes the user stop and
+' check before something that can't be undone (ui-idioms, Menus).
+sub confirm(message as string, action as string)
+    m.pendingConfirm = action
+    dlg = CreateObject("roSGNode", "StandardMessageDialog")
+    dlg.title = "Are you sure?"
+    dlg.message = [message]
+    dlg.buttons = ["Yes", "Cancel"]
+    dlg.ObserveField("buttonSelected", "onConfirm")
+    dlg.ObserveField("wasClosed", "onRestoreFocus")
+    m.top.getScene().dialog = dlg
+end sub
+
+sub onConfirm(event as object)
+    m.top.getScene().dialog.close = true
+    if event.GetData() <> 0 then return
+    if m.pendingConfirm = "remove"
+        s = m.global.session
+        ' The request carries the token, taken now, so the session can go.
+        apic.call("auth/logout", {}, invalid)
+        store.setProfileList(profiles.remove(store.profileList(), util.str(s.server, ""), util.str(s.userId, "")))
+        ' Signed out: its token is revoked, and nothing may keep using it.
+        m.global.session = {}
+        log.info("settings", "profile removed")
+        if store.profileList().Count() = 0
+            m.top.navigate = { screen: "setup", params: { server: store.server() }, root: true }
+        else
+            m.top.navigate = { screen: "profiles", params: {}, root: true }
+        end if
+    else if m.pendingConfirm = "reset"
+        store.clearAll()
+        m.global.session = {}
+        log.info("settings", "all data cleared")
+        m.top.navigate = { screen: "setup", params: {}, root: true }
+    end if
+end sub

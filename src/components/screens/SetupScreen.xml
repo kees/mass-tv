@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Choosing the Music Assistant server to link a profile on (first run,
+     or another profile): a list of the servers found on the network
+     (mDNS), and below it the server address, which can also be typed,
+     with Link, which opens the link screen for that server. Below that, a
+     separate Now Playing area: an unlinked Mass TV still plays what Music
+     Assistant sends. The link screen emits setupDone; this one doesn't. -->
+<component name="SetupScreen" extends="BaseScreen">
+    <children>
+        <!-- Screens sit 96 px down, below the nav bar; this one has none, so
+             the title uses that space and everything below moves up. -->
+        <Label id="heading" text="Link Music Assistant Profile" translation="[0,-56]" width="1920" horizAlign="center" color="#EEEEF6">
+            <Font role="font" uri="font:BoldSystemFontFile" size="64" />
+        </Label>
+
+        <Group translation="[96,70]">
+            <Label text="Music Assistant servers broadcast on your network" width="1728" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+            <!-- One MenuRow per server found: "name · address". Four rows
+                 show; more scroll within them (the edge rows fade). -->
+            <MarkupList
+                id="servers"
+                translation="[0,70]"
+                itemComponentName="MenuRow"
+                itemSize="[1728,64]"
+                itemSpacing="[0,8]"
+                numRows="4"
+                drawFocusFeedback="false"
+                vertFocusAnimationStyle="floatingFocus" />
+            <ListFade id="serversFade" />
+            <!-- While looking, or when nothing was found. -->
+            <Label id="discovery" translation="[24,70]" width="1680" height="64" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+
+            <Label text="Music Assistant server (address:port)" translation="[0,390]" width="1728" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+            <!-- The address as a one-row list (OK opens the keyboard), with
+                 Link (and Cancel) beside it, centered on the same line. -->
+            <MarkupList
+                id="address"
+                translation="[0,470]"
+                itemComponentName="MenuRow"
+                itemSize="[1200,64]"
+                numRows="1"
+                drawFocusFeedback="false"
+                vertFocusAnimationStyle="floatingFocus" />
+            <ButtonRow id="actions" translation="[1224,460]" minWidth="160" spacing="8" passEdges="true" />
+            <Label id="status" translation="[24,550]" width="1680" height="50" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" />
+
+            <!-- Listening without a profile: its own area at the bottom. -->
+            <Rectangle color="#2A313B" translation="[0,630]" width="1728" height="2" />
+            <!-- Text set in init, with this Roku's name. -->
+            <Label id="unlinkedNote" translation="[0,650]" width="1728" horizAlign="center" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" />
+            <!-- Centered under the text (x set in init from its width). -->
+            <ButtonRow id="nowPlaying" translation="[0,710]" minWidth="110" spacing="8" />
+        </Group>
+
+        <BusySpinner id="spinner" translation="[1700,60]" visible="false" />
+    </children>
+</component>

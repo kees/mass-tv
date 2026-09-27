@@ -1,0 +1,234 @@
+' Minimal multicast DNS (RFC 6762) query building and response parsing,
+' for finding Music Assistant (_mass._tcp.local) on the LAN. Pure
+' functions over roByteArray; the socket work is in MdnsTask.
+import "pkg:/source/lib/Util.bs"
+
+namespace mdns
+
+    const GROUP = "224.0.0.251:5353"
+
+    ' Record types by name and number.
+    function typeCode(name as string) as integer
+        codes = { A: 1, PTR: 12, TXT: 16, AAAA: 28, SRV: 33, ANY: 255 }
+        c = codes[UCase(name)]
+        if c = invalid then return 12
+        return c
+    end function
+
+    function typeName(code as integer) as string
+        names = { "1": "A", "12": "PTR", "16": "TXT", "28": "AAAA", "33": "SRV", "255": "ANY" }
+        n = names[code.ToStr()]
+        if n = invalid then return code.ToStr()
+        return n
+    end function
+
+    ' A one-question query. Sent from a port other than 5353, it is a
+    ' "legacy unicast" query (RFC 6762 section 6.7): responders answer
+    ' straight to the sender's address and port, echoing the id.
+    function query(name as string, qtype as integer, id as integer) as object
+        b = CreateObject("roByteArray")
+        mdns.push16(b, id)
+        mdns.push16(b, 0) ' flags: standard query
+        mdns.push16(b, 1) ' one question
+        mdns.push16(b, 0)
+        mdns.push16(b, 0)
+        mdns.push16(b, 0)
+        for each part in name.Split(".")
+            if part <> ""
+                bytes = CreateObject("roByteArray")
+                bytes.FromAsciiString(part)
+                b.Push(bytes.Count())
+                b.Append(bytes)
+            end if
+        end for
+        b.Push(0)
+        mdns.push16(b, qtype)
+        mdns.push16(b, 1) ' class IN
+        return b
+    end function
+
+    sub push16(b as object, v as integer)
+        b.Push((v >> 8) and &hFF)
+        b.Push(v and &hFF)
+    end sub
+
+    function u16(b as object, off as integer) as integer
+        return (b[off] << 8) or b[off + 1]
+    end function
+
+    function u32(b as object, off as integer) as integer
+        return (b[off] << 24) or (b[off + 1] << 16) or (b[off + 2] << 8) or b[off + 3]
+    end function
+
+    ' Reads a possibly compressed name at off. Returns { name, next } where
+    ' next is the offset after the name in place, or invalid if malformed.
+    function readName(b as object, off as integer, size as integer) as dynamic
+        labels = []
+        nextOff = -1
+        hops = 0
+        while true
+            if off >= size or hops > 32 then return invalid
+            n = b[off]
+            if n = 0
+                if nextOff < 0 then nextOff = off + 1
+                exit while
+            else if (n and &hC0) = &hC0
+                if off + 1 >= size then return invalid
+                if nextOff < 0 then nextOff = off + 2
+                off = ((n and &h3F) << 8) or b[off + 1]
+                hops = hops + 1
+            else
+                if off + 1 + n > size then return invalid
+                labels.Push(mdns.ascii(b, off + 1, n))
+                off = off + 1 + n
+            end if
+        end while
+        return { name: labels.Join("."), next: nextOff }
+    end function
+
+    function ascii(b as object, off as integer, n as integer) as string
+        part = CreateObject("roByteArray")
+        for i = 0 to n - 1
+            part.Push(b[off + i])
+        end for
+        return part.ToAsciiString()
+    end function
+
+    ' Parses a response of `size` bytes. Returns { id, response, records }
+    ' with every answer, authority, and additional record as
+    ' { type, name, ttl, value }; value is a name (PTR), { target, port }
+    ' (SRV), an array of strings (TXT), a dotted address (A), or the hex
+    ' of the data (others). Returns invalid for a malformed packet.
+    function parse(b as object, size as integer) as dynamic
+        if size < 12 then return invalid
+        out = { id: mdns.u16(b, 0), response: (b[2] and &h80) <> 0, records: [] }
+        qd = mdns.u16(b, 4)
+        total = mdns.u16(b, 6) + mdns.u16(b, 8) + mdns.u16(b, 10)
+        off = 12
+        for i = 1 to qd
+            q = mdns.readName(b, off, size)
+            if q = invalid then return invalid
+            off = q.next + 4
+        end for
+        for i = 1 to total
+            rn = mdns.readName(b, off, size)
+            if rn = invalid then return invalid
+            off = rn.next
+            if off + 10 > size then return invalid
+            rtype = mdns.u16(b, off)
+            ttl = mdns.u32(b, off + 4)
+            rdlen = mdns.u16(b, off + 8)
+            off = off + 10
+            if off + rdlen > size then return invalid
+            value = mdns.rdata(b, rtype, off, rdlen, size)
+            if value = invalid then return invalid
+            out.records.Push({ type: mdns.typeName(rtype), name: rn.name, ttl: ttl, value: value })
+            off = off + rdlen
+        end for
+        return out
+    end function
+
+    function rdata(b as object, rtype as integer, off as integer, rdlen as integer, size as integer) as dynamic
+        if rtype = 12
+            n = mdns.readName(b, off, size)
+            if n = invalid then return invalid
+            return n.name
+        else if rtype = 33
+            if rdlen < 7 then return invalid
+            n = mdns.readName(b, off + 6, size)
+            if n = invalid then return invalid
+            return { target: n.name, port: mdns.u16(b, off + 4) }
+        else if rtype = 16
+            strs = []
+            i = off
+            while i < off + rdlen
+                n = b[i]
+                if i + 1 + n > off + rdlen then return invalid
+                if n > 0 then strs.Push(mdns.ascii(b, i + 1, n))
+                i = i + 1 + n
+            end while
+            return strs
+        else if rtype = 1 and rdlen = 4
+            return b[off].ToStr() + "." + b[off + 1].ToStr() + "." + b[off + 2].ToStr() + "." + b[off + 3].ToStr()
+        end if
+        part = CreateObject("roByteArray")
+        for i = 0 to rdlen - 1
+            part.Push(b[off + i])
+        end for
+        return part.ToHexString()
+    end function
+
+    ' The Music Assistant servers in MdnsTask replies ([{ from, records }])
+    ' to a _mass._tcp.local query, as [{ id, name, server }] sorted by
+    ' name, one per server. server is
+    ' "http://host:port": TXT base_url (MA's own A record can be a
+    ' container's bridge address), else the SRV target's A record, else the
+    ' replying host, with the SRV port. name is TXT name, else the instance
+    ' label (MA uses its server_id); id is TXT server_id, else the instance
+    ' name. Instances without an address are left out.
+    function massServers(replies as dynamic) as object
+        instances = {}
+        order = []
+        addrs = {}
+        service = "_mass._tcp.local"
+        suffix = "." + service
+        if not util.isArray(replies) then return []
+        for each reply in replies
+            from = util.str(util.get(reply, "from"), "")
+            colon = Instr(1, from, ":")
+            if colon > 0 then from = Left(from, colon - 1)
+            records = util.get(reply, "records", [])
+            for each rec in records
+                rname = LCase(util.str(rec.name, ""))
+                if rec.type = "A"
+                    addrs[rname] = rec.value
+                else if rec.type = "PTR" and rname = service
+                    mdns.instanceFor(instances, order, util.str(rec.value, ""), from)
+                else if util.endsWith(rname, suffix)
+                    inst = mdns.instanceFor(instances, order, util.str(rec.name, ""), from)
+                    if rec.type = "SRV" and util.isAA(rec.value)
+                        inst.target = LCase(util.str(rec.value.target, ""))
+                        inst.port = rec.value.port
+                    else if rec.type = "TXT" and util.isArray(rec.value)
+                        for each kv in rec.value
+                            eq = Instr(1, kv, "=")
+                            if eq > 1 then inst.txt[LCase(Left(kv, eq - 1))] = Mid(kv, eq + 1)
+                        end for
+                    end if
+                end if
+            end for
+        end for
+        found = []
+        seen = {}
+        for each key in order
+            inst = instances[key]
+            url = util.normalizeServer(util.str(inst.txt.base_url, util.str(inst.txt.internal_url, "")))
+            if url = "" and util.isInteger(inst.port)
+                host = util.str(addrs[inst.target], inst.from)
+                if host <> "" then url = util.normalizeServer(host + ":" + inst.port.ToStr())
+            end if
+            label = inst.instance
+            if util.endsWith(LCase(label), suffix) then label = Left(label, Len(label) - Len(suffix))
+            id = util.str(inst.txt.server_id, LCase(inst.instance))
+            if url <> "" and not seen.DoesExist(id) and not seen.DoesExist(url)
+                seen[id] = true
+                seen[url] = true
+                found.Push({ id: id, name: util.str(inst.txt.name, label), server: url })
+            end if
+        end for
+        found.SortBy("name", "i")
+        return found
+    end function
+
+    function instanceFor(instances as object, order as object, instance as string, from as string) as object
+        key = LCase(instance)
+        inst = instances[key]
+        if inst = invalid
+            inst = { instance: instance, from: from, target: "", port: invalid, txt: {} }
+            instances[key] = inst
+            order.Push(key)
+        end if
+        return inst
+    end function
+
+end namespace

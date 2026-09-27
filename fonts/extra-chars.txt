@@ -1,0 +1,4 @@
+# Characters to add to the bundled font beyond tools/make_font.py's sets
+# (the CJK font must have them). Everything after "#" on a line is a
+# comment; spaces are ignored. Run `tools/make_font.py build` after
+# changing this file.

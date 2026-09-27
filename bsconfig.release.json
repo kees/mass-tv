@@ -1,0 +1,10 @@
+{
+  "extends": "bsconfig.json",
+  "stagingDir": "build/release",
+  "sourceMap": false,
+  "manifest": {
+    "bs_const": {
+      "DEBUG": false
+    }
+  }
+}

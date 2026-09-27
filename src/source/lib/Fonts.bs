@@ -1,0 +1,95 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+
+' Text from Music Assistant (titles, artists, names) can hold characters
+' Roku's system font lacks: CJK, emoji, and many symbols show as boxes.
+' A Label draws with one font, without falling back to another, so such
+' a label switches to Mass TV's bundled font (tools/make_font.py: Latin,
+' Greek, Cyrillic, CJK, and monochrome emoji in one file, regular weight
+' only) for its whole text, at its system font's size, and back when its
+' text no longer needs it (list items are reused).
+'
+' Bold is emulated (widgets/BoldTwin: a copy of the label drawn a little
+' to the right), to ship one weight. The caller says which labels are
+' bold: a system font set by name ("font:SmallBoldSystemFont") reads
+' back as a Font node with only its size (uri "", no name; Roku OS 15.3),
+' so its weight can't be told. A font file set in code
+' ("font:BoldSystemFontFile") does show in uri.
+namespace fonts
+
+    const URI = "pkg:/fonts/MassTVText-Regular.ttf"
+    ' Characters from here up may be missing from the system font, which
+    ' does draw Latin (with its extensions), Greek, Cyrillic, and general
+    ' punctuation.
+    const FIRST_MISSING = &h2190
+    const TWIN_COMPONENT = "BoldTwin"
+
+    ' Sets a label's text, in the bundled font if the text needs it. bold:
+    ' the label's own font is a bold one.
+    sub label(lbl as object, text as dynamic, bold = false as boolean)
+        t = util.str(text, "")
+        needs = fonts.needsBundled(t)
+        if needs and not lbl.hasField("systemFont")
+            ' Keep the label's own font to go back to.
+            lbl.AddField("systemFont", "node", false)
+            lbl.systemFont = lbl.font
+        end if
+        if lbl.hasField("systemFont")
+            want = lbl.systemFont
+            if needs then want = fonts.bundledFor(lbl.systemFont)
+            ' Only a change: this runs on every redraw of a list row.
+            if want <> invalid and (lbl.font = invalid or not lbl.font.isSameNode(want)) then lbl.font = want
+            if bold or fonts.isBoldFile(lbl.systemFont) then fonts.showTwin(lbl, needs)
+        end if
+        if lbl.text <> t then lbl.text = t
+    end sub
+
+    ' True when some character may be missing from the system font.
+    function needsBundled(text as string) as boolean
+        for i = 1 to Len(text)
+            if Asc(Mid(text, i, 1)) >= fonts.FIRST_MISSING then return true
+        end for
+        return false
+    end function
+
+    function isBoldFile(systemFont as dynamic) as boolean
+        return systemFont <> invalid and Instr(1, LCase(util.str(systemFont.uri, "")), "bold") > 0
+    end function
+
+    ' Shows or hides a bold label's two twins (added the first time
+    ' they're needed).
+    sub showTwin(lbl as object, visible as boolean)
+        for nth = 1 to 2
+            id = "boldTwin" + nth.ToStr()
+            twin = lbl.findNode(id)
+            if twin = invalid
+                if not visible then return
+                ' (Through a constant: the unit-test build has no components.)
+                twin = CreateObject("roSGNode", fonts.TWIN_COMPONENT)
+                twin.id = id
+                twin.nth = nth
+                lbl.appendChild(twin)
+                twin.source = lbl
+            end if
+            if twin.visible <> visible then twin.visible = visible
+        end for
+    end sub
+
+    ' The bundled font at a system font's size.
+    function bundledFor(systemFont as dynamic) as object
+        size = 27
+        if systemFont <> invalid and util.isNumber(systemFont.size) and systemFont.size > 1 then size = systemFont.size
+        ' One Font node per size in each component.
+        if m.bundledFonts = invalid then m.bundledFonts = {}
+        key = size.ToStr()
+        f = m.bundledFonts[key]
+        if f = invalid
+            f = CreateObject("roSGNode", "Font")
+            f.uri = fonts.URI
+            f.size = size
+            m.bundledFonts[key] = f
+            log.debug("fonts", "bundled", { size: size })
+        end if
+        return f
+    end function
+end namespace

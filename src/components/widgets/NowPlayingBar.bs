@@ -1,0 +1,129 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/MaApi.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+sub init()
+    m.logTag = "npbar"
+    m.progress = m.top.findNode("progress")
+    m.art = m.top.findNode("art")
+    m.title = m.top.findNode("title")
+    m.artist = m.top.findNode("artist")
+    m.time = m.top.findNode("time")
+    m.spinner = m.top.findNode("spinner")
+    m.spinner.poster.uri = "pkg:/images/spinner.png"
+    m.spinner.poster.width = 48
+    m.spinner.poster.height = 48
+    m.timeSpinner = m.top.findNode("timeSpinner")
+    m.timeSpinner.poster.uri = "pkg:/images/spinner.png"
+    m.timeSpinner.poster.width = 36
+    m.timeSpinner.poster.height = 36
+    m.loadingShown = false
+    m.pendingTimer = m.top.findNode("pendingTimer")
+    m.pendingTimer.ObserveField("fire", "onPendingTimeout")
+    m.global.ObserveFieldScoped("nowPlaying", "render")
+    ' The queue poll brings the full track item (see ma.nowPlayingText).
+    m.global.ObserveFieldScoped("queueState", "render")
+    m.global.ObserveFieldScoped("playPending", "onPlayPending")
+    render()
+end sub
+
+sub onPlayPending()
+    m.pendingTimer.control = "stop"
+    if isPending() then m.pendingTimer.control = "start"
+    render()
+end sub
+
+function isPending() as boolean
+    return util.get(m.global.playPending, "sentAt") <> invalid
+end function
+
+sub onPendingTimeout()
+    if not isPending() then return
+    log.warn("npbar", "no stream from Music Assistant after a play request")
+    m.global.playPending = {}
+    m.global.toast = "Music Assistant didn't start playback. Try again?"
+end sub
+
+sub render()
+    if isPending()
+        renderPending()
+        return
+    end if
+    m.spinner.visible = false
+    m.spinner.control = "stop"
+    m.art.visible = true
+    np = m.global.nowPlaying
+    status = util.str(util.get(np, "status"), "idle")
+    active = status = "playing" or status = "paused" or status = "loading"
+    m.top.visible = active and m.top.enabled
+    if not active
+        showLoading(false)
+        return
+    end if
+    text = ma.nowPlayingText(np, m.global.queueState)
+    fonts.label(m.title, text.title, true)
+    fonts.label(m.artist, text.line2)
+    art = util.str(np.art, "")
+    if m.art.uri <> art then m.art.uri = art
+    shown = util.get(np, "position", 0)
+    if m.top.seekPreview >= 0 then shown = m.top.seekPreview
+    dur = util.get(np, "duration")
+    if np.isLive = true or dur = invalid
+        m.time.text = util.formatDuration(shown)
+        m.progress.width = 0
+    else
+        m.time.text = util.formatDuration(shown) + " / " + util.formatDuration(dur)
+        frac = 0
+        if dur > 0 then frac = shown / dur
+        if frac > 1 then frac = 1
+        m.progress.width = Int(1920 * frac)
+    end if
+    ' While buffering, "Loading…" takes the time's place; "Paused" goes
+    ' before the time.
+    if status = "loading" then m.time.text = "Loading…"
+    if status = "paused" then m.time.text = "Paused · " + m.time.text
+    showLoading(status = "loading")
+end sub
+
+' "Loading…" in the time slot gets a spinner at the bar's right edge; the
+' text moves left to make room for it.
+sub showLoading(on as boolean)
+    if on = m.loadingShown then return
+    m.loadingShown = on
+    m.timeSpinner.visible = on
+    if on
+        m.timeSpinner.control = "start"
+        m.time.translation = [1376, 32]
+    else
+        m.timeSpinner.control = "stop"
+        m.time.translation = [1424, 32]
+    end if
+end sub
+
+' A play request is waiting for MA: show what's coming, with "Loading…"
+' where the time goes, as for a stream that is buffering. The cover URL matches
+' the track rows', so it usually shows at once from Roku's texture cache;
+' without one, the spinner stands in.
+sub renderPending()
+    pending = m.global.playPending
+    m.top.visible = m.top.enabled
+    title = util.str(util.get(pending, "title"), "")
+    if title = "" then title = "Starting playback"
+    fonts.label(m.title, title, true)
+    fonts.label(m.artist, util.str(util.get(pending, "artist"), ""))
+    m.time.text = "Loading…"
+    showLoading(true)
+    m.progress.width = 0
+    art = util.str(util.get(pending, "art"), "")
+    if art <> ""
+        if m.art.uri <> art then m.art.uri = art
+        m.art.visible = true
+        m.spinner.visible = false
+        m.spinner.control = "stop"
+    else
+        m.art.visible = false
+        m.spinner.visible = true
+        m.spinner.control = "start"
+    end if
+end sub

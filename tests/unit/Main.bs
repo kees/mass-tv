@@ -1,0 +1,24 @@
+' Off-device unit test entry point: `make unit`.
+sub main()
+    utilTests()
+    deepLinkTests()
+    maApiTests()
+    imagesTests()
+    jwtTests()
+    profilesTests()
+    keysTests()
+    httpTests()
+    qrTests()
+    mdnsTests()
+    librarySortTests()
+    playbackTests()
+    logTests()
+    speechTests()
+    fontsTests()
+    failures = tst.report()
+    if failures > 0
+        print "UNIT_RESULT=FAIL"
+    else
+        print "UNIT_RESULT=PASS"
+    end if
+end sub

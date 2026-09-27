@@ -1,0 +1,11 @@
+{
+  "rootDir": ".",
+  "files": [
+    { "src": "src/source/lib/**/*.bs", "dest": "source/lib" },
+    { "src": "tests/unit/**/*.bs", "dest": "source/tests" }
+  ],
+  "stagingDir": "build/unit",
+  "retainStagingDir": true,
+  "createPackage": false,
+  "sourceMap": false
+}

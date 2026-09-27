@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Who's listening?": one MenuRow per linked profile (a pill; the gray
+     row in the blue ring on focus), then "+ Link a profile". Up/Down wrap.
+     Emits profileChosen with the stored profile. -->
+<component name="ProfileScreen" extends="BaseScreen">
+    <interface>
+        <field id="profileChosen" type="assocarray" alwaysNotify="true" />
+    </interface>
+    <children>
+        <Label text="Who's listening?" translation="[0,200]" width="1920" horizAlign="center" color="#EEEEF6" font="font:LargeBoldSystemFont" />
+        <MarkupList
+            id="list"
+            translation="[660,340]"
+            itemComponentName="MenuRow"
+            itemSize="[600,64]"
+            itemSpacing="[0,8]"
+            numRows="7"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <Label id="hint" translation="[0,860]" width="1920" horizAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+    </children>
+</component>

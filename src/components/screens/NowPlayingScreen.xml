@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Full now-playing view with transport controls. After a minute without
+     key presses it switches to a burn-in-safe ambient view (art slowly
+     drifting); any key returns. -->
+<component name="NowPlayingScreen" extends="BaseScreen">
+    <interface>
+        <field id="seekPreview" type="float" value="-1" onChange="render" />
+        <!-- Output: true while the ambient view is up. MainScene hides the
+             nav bar then, so the whole screen is free for the drift. -->
+        <field id="ambient" type="boolean" value="false" />
+    </interface>
+    <children>
+        <!-- The cover, decoded at 80 px and stretched full screen, blurs into
+             a faint backdrop; a missing cover gives the placeholder. -->
+        <CoverArt id="bgArt" width="1920" height="1080" translation="[0,-96]" loadSize="80" opacity="0.08" placeholderUri="pkg:/images/placeholder_nowplaying.png" />
+        <Group id="chrome">
+            <CoverArt id="art" translation="[96,40]" width="520" loadSize="1024" boxColor="#232A33" placeholderUri="pkg:/images/placeholder_nowplaying.png" />
+            <Label id="status" translation="[672,60]" width="560" color="#5A8DEE" font="font:SmallBoldSystemFont" />
+            <!-- Playback modes (SHUFFLE, REPEAT ALL/ONE), shown whenever on. -->
+            <Label id="modes" translation="[1264,60]" width="560" horizAlign="right" color="#7FA8F5" font="font:SmallBoldSystemFont" />
+            <Label id="title" translation="[672,96]" width="1152" height="80" color="#FFFFFF" font="font:LargeBoldSystemFont" />
+            <Label id="artist" translation="[672,186]" width="1152" color="#EEEEF6" font="font:MediumSystemFont" />
+            <Label id="album" translation="[672,236]" width="1152" color="#9A9FB0" font="font:SmallSystemFont" />
+            <Rectangle id="barTrack" translation="[672,330]" width="1152" height="8" color="#2A313B" />
+            <Rectangle id="barFill" translation="[672,330]" width="0" height="8" color="#5A8DEE" />
+            <Label id="elapsed" translation="[672,350]" width="300" color="#9A9FB0" font="font:SmallSystemFont" />
+            <Label id="remaining" translation="[1524,350]" width="300" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" />
+            <ButtonRow id="buttons" translation="[672,430]" minWidth="110" spacing="8" />
+            <Label id="upNext" translation="[672,560]" width="1152" color="#9A9FB0" font="font:SmallSystemFont" />
+            <Label id="hint" translation="[96,700]" width="1728" horizAlign="center" color="#5A6270" font="font:SmallestSystemFont" />
+        </Group>
+        <!-- Screen coordinates: the group undoes the screen's 96 px offset
+             below the (hidden) nav bar. The 560 px art plus its caption
+             (610 px tall) wanders the whole 1920x1080 frame, touching every
+             edge, so nothing stays lit in one place. -->
+        <Group id="ambient" visible="false" translation="[0,-96]">
+            <CoverArt id="ambientArt" width="560" loadSize="1024" opacity="0.85" placeholderUri="pkg:/images/placeholder_nowplaying.png" />
+            <Label id="ambientText" width="560" height="40" color="#9A9FB0" font="font:SmallSystemFont" />
+        </Group>
+        <Animation id="drift" duration="240" repeat="true" easeFunction="linear">
+            <Vector2DFieldInterpolator id="driftArt" key="[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]" keyValue="[[40,30],[700,440],[1320,120],[900,30],[40,380],[480,440],[1320,440],[1100,30],[40,30]]" fieldToInterp="ambientArt.translation" />
+            <Vector2DFieldInterpolator id="driftText" key="[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]" keyValue="[[40,600],[700,1010],[1320,690],[900,600],[40,950],[480,1010],[1320,1010],[1100,600],[40,600]]" fieldToInterp="ambientText.translation" />
+        </Animation>
+        <Timer id="idleTimer" duration="60" repeat="false" />
+    </children>
+</component>

@@ -1,0 +1,230 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/FocusRing.bs"
+import "pkg:/source/lib/Speech.bs"
+
+const BUTTON_HEIGHT = 84
+' Text inset in each pill: 24 keeps Now Playing's seven buttons inside
+' the right margin (with 28 the row ran about 20 px past it).
+const PAD_X = 24
+' The focus ring's height, centered in the button's slot.
+const RING_HEIGHT = 58
+' A centered label's line box keeps room for descenders, so its letters
+' sat about 3 px above the pill's center at 1080p (measured in a device
+' screenshot): lower them by that much.
+const LABEL_NUDGE_Y = 3
+
+sub init()
+    m.row = m.top.findNode("row")
+    m.ring = m.top.findNode("ring")
+    m.measure = m.top.findNode("measure")
+    m.top.ObserveField("focusedChild", "onFocusChange")
+    m.items = []
+    m.hadFocus = false
+    ' What the screen reader last said for the focused button.
+    m.spoken = ""
+    ' The row speaks for itself (speech.say): Roku would read every label.
+    m.top.muteAudioGuide = true
+end sub
+
+sub onFocusChange()
+    focused = m.top.hasFocus()
+    if focused and not m.hadFocus
+        logFocus()
+        speakFocused(true)
+    end if
+    m.hadFocus = focused
+    render()
+end sub
+
+sub onFocusIndex()
+    if m.top.hasFocus()
+        logFocus()
+        speakFocused(false)
+    end if
+    render()
+end sub
+
+sub logFocus()
+    i = m.top.focusIndex
+    log.debug("buttons", "focus", { index: i, label: labelAt(i) })
+end sub
+
+function labelAt(i as integer) as string
+    labels = m.top.buttons
+    if util.isArray(labels) and i >= 0 and i < labels.Count() then return util.str(labels[i], "")
+    return ""
+end function
+
+' The focused button as the screen reader says it, like Roku's own button
+' groups: "Shuffle, on, button 2 of 5" ("Close, button" when alone).
+function focusedSpeech() as string
+    i = m.top.focusIndex
+    n = m.items.Count()
+    if i < 0 or i >= n then return ""
+    parts = [labelAt(i)]
+    active = m.top.active
+    if isDisabled(i)
+        parts.Push("unavailable")
+    else if util.isArray(active) and i < active.Count() and active[i] = true
+        parts.Push("on")
+    end if
+    if n = 1 then parts.Push("button") else parts.Push("button " + speech.position(i, n))
+    return speech.join(parts)
+end function
+
+' withContext: the row just got focus, so the screen's context goes first.
+sub speakFocused(withContext as boolean)
+    m.spoken = focusedSpeech()
+    text = m.spoken
+    if withContext then text = speech.join([m.top.context, text])
+    speech.say(text)
+end sub
+
+' A label or switch changing under the cursor (Play to Pause, Shuffle on)
+' is said again; the rest of the row is left alone.
+sub speakIfChanged()
+    if not m.top.hasFocus() then return
+    now = focusedSpeech()
+    if now <> m.spoken then speakFocused(false)
+end sub
+
+sub rebuild()
+    labels = m.top.buttons
+    if labels = invalid then labels = []
+    ' Relabel in place when the count is unchanged (e.g. Play <-> Pause),
+    ' so focus and layout don't jump.
+    if labels.Count() = m.items.Count()
+        for i = 0 to labels.Count() - 1
+            m.items[i].label.text = labels[i]
+        end for
+        layout()
+        render()
+        return
+    end if
+    m.row.removeChildrenIndex(m.row.getChildCount(), 0)
+    m.items = []
+    for each text in labels
+        g = CreateObject("roSGNode", "Group")
+        pill = CreateObject("roSGNode", "Poster")
+        pill.uri = focusring.PILL_URI
+        pill.translation = [0, (BUTTON_HEIGHT - RING_HEIGHT) / 2]
+        pill.height = RING_HEIGHT
+        lbl = CreateObject("roSGNode", "Label")
+        lbl.text = text
+        lbl.height = BUTTON_HEIGHT
+        lbl.vertAlign = "center"
+        lbl.horizAlign = "center"
+        lbl.translation = [0, LABEL_NUDGE_Y]
+        lbl.font = "font:SmallBoldSystemFont"
+        g.appendChild(pill)
+        g.appendChild(lbl)
+        m.row.appendChild(g)
+        m.items.Push({ group: g, pill: pill, label: lbl, width: 0 })
+    end for
+    if m.top.focusIndex >= labels.Count() then m.top.focusIndex = 0
+    layout()
+    render()
+end sub
+
+sub layout()
+    x = 0
+    hints = m.top.sizeHints
+    for i = 0 to m.items.Count() - 1
+        it = m.items[i]
+        w = textWidth(it.label.text) + PAD_X * 2
+        if util.isArray(hints) and i < hints.Count() and util.isArray(hints[i])
+            for each h in hints[i]
+                hw = textWidth(util.str(h, "")) + PAD_X * 2
+                if hw > w then w = hw
+            end for
+        end if
+        if w < m.top.minWidth then w = m.top.minWidth
+        ' The pill fills the slot, and the focus ring outlines the pill.
+        it.width = w
+        it.pill.width = w
+        it.label.width = w
+        it.group.translation = [x, 0]
+        x = x + w + m.top.spacing
+    end for
+end sub
+
+' Natural width of text in the buttons' font (a label with a set width
+' would report that width instead).
+function textWidth(text as string) as float
+    m.measure.width = 0
+    m.measure.text = text
+    return m.measure.boundingRect().width
+end function
+
+' Each button rests on a pill with light text (something to press). Focus
+' is the focus ring (translucent fill, blue border) over the focused
+' button's pill, shown only while the row has focus; an "on" toggle has
+' blue text, blue being the "selected" idiom (the current screen or tab).
+sub render()
+    focused = m.top.hasFocus()
+    active = m.top.active
+    m.ring.visible = false
+    for i = 0 to m.items.Count() - 1
+        it = m.items[i]
+        isOn = util.isArray(active) and i < active.Count() and active[i] = true
+        ' The ring (drawn behind the buttons) takes the focused pill's place.
+        it.pill.visible = not (i = m.top.focusIndex and focused)
+        ' Unavailable: greyed text on a fainter pill, even under the cursor.
+        off = isDisabled(i)
+        if off then it.pill.opacity = 0.5 else it.pill.opacity = 1
+        if off
+            it.label.color = focusring.DISABLED_TEXT
+            if i = m.top.focusIndex and focused
+                m.ring.translation = [it.group.translation[0], (BUTTON_HEIGHT - RING_HEIGHT) / 2]
+                m.ring.width = it.width
+                m.ring.height = RING_HEIGHT
+                m.ring.visible = true
+            end if
+        else if i = m.top.focusIndex and focused
+            ' Blue means selected, focused or not (stronger in the ring).
+            if isOn then it.label.color = focusring.SELECTED_TEXT else it.label.color = focusring.TEXT
+            m.ring.translation = [it.group.translation[0], (BUTTON_HEIGHT - RING_HEIGHT) / 2]
+            m.ring.width = it.width
+            m.ring.height = RING_HEIGHT
+            m.ring.visible = true
+        else if isOn
+            it.label.color = focusring.SELECTED
+        else
+            it.label.color = focusring.PILL_TEXT
+        end if
+    end for
+    speakIfChanged()
+end sub
+
+function isDisabled(i as integer) as boolean
+    d = m.top.disabled
+    return util.isArray(d) and i >= 0 and i < d.Count() and d[i] = true
+end function
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    n = m.items.Count()
+    if m.top.passEdges
+        if key = "left" and m.top.focusIndex <= 0 then return false
+        if key = "right" and m.top.focusIndex >= n - 1 then return false
+    end if
+    ' Left/Right wrap around the row's ends (unless passEdges hands them
+    ' to the screen, handled above).
+    if (key = "left" or key = "right") and n = 0 then return true
+    if key = "left"
+        if m.top.focusIndex > 0 then m.top.focusIndex = m.top.focusIndex - 1 else m.top.focusIndex = n - 1
+        return true
+    else if key = "right"
+        if m.top.focusIndex < n - 1 then m.top.focusIndex = m.top.focusIndex + 1 else m.top.focusIndex = 0
+        return true
+    else if key = "OK"
+        if n > 0 and isDisabled(m.top.focusIndex)
+            log.debug("buttons", "disabled", { index: m.top.focusIndex })
+        else if n > 0
+            m.top.selected = m.top.focusIndex
+        end if
+        return true
+    end if
+    return false
+end function

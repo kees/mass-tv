@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Receives ECP /input deep links (and /launch to a running channel, since
+     the manifest sets supports_input_launch=1) and forwards the raw params. -->
+<component name="InputTask" extends="Task">
+    <interface>
+        <field id="input" type="assocarray" alwaysNotify="true" />
+    </interface>
+</component>

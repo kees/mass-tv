@@ -1,0 +1,21 @@
+sub speechTests()
+    tst.begin("speech")
+    tst.eq(speech.clean("Kimiko Ishizaka · 2012"), "Kimiko Ishizaka, 2012", "separator becomes a pause")
+    tst.eq(speech.clean("Name (Z–A)"), "Name (Z to A)", "en dash read as 'to'")
+    tst.eq(speech.clean("  a   b  "), "a b", "spaces collapsed and trimmed")
+    tst.eq(speech.clean(invalid), "", "no text")
+    tst.eq(speech.duration(200), "3 minutes 20 seconds", "minutes and seconds")
+    tst.eq(speech.duration(61), "1 minute 1 second", "singular units")
+    tst.eq(speech.duration(45), "45 seconds", "seconds only")
+    tst.eq(speech.duration(3725), "1 hour 2 minutes", "seconds dropped past an hour")
+    tst.eq(speech.duration(7200), "2 hours", "whole hours")
+    tst.eq(speech.duration(0), "", "zero")
+    tst.eq(speech.duration(invalid), "", "unknown length")
+    tst.eq(speech.position(0, 5), "1 of 5", "position is 1-based")
+    tst.eq(speech.join(["Play", "", invalid, "button 1 of 4"]), "Play, button 1 of 4", "empty parts skipped")
+    n = CreateObject("roSGNode", "ContentNode")
+    n.title = "Aria"
+    n.description = "Kimiko Ishizaka · Open Goldberg Variations"
+    speech.describeRow(n, 245, "now playing")
+    tst.eq(n.AUDIO_GUIDE_SUFFIX, "now playing, Kimiko Ishizaka, Open Goldberg Variations, 4 minutes 5 seconds", "track row suffix")
+end sub

@@ -1,0 +1,87 @@
+sub deepLinkTests()
+    tst.begin("deeplink")
+    hosts = ["192.168.1.10"]
+    url = "http://192.168.1.10:8097/single/sess1/ROKU_X1/qi42/ROKU_X1.flac"
+
+    ' What MA's roku_media_assistant provider sends for play_media.
+    r = deeplink.parse({
+        u: url, t: "a", songName: "Song", artistName: "Artist", albumName: "Album",
+        albumArt: "http://192.168.1.10:8095/imageproxy/abc?size=512", songFormat: "flac",
+        duration: "215", isLive: "false"
+    }, hosts)
+    tst.eq(r.action, "play", "play action")
+    tst.eq(r.media.title, "Song", "title")
+    tst.eq(r.media.duration, 215, "duration")
+    tst.eq(r.media.isLive, false, "isLive")
+    tst.eq(r.media.format, "flac", "format")
+    tst.eq(r.media.stream.queueItemId, "qi42", "queue item id")
+    tst.eq(r.media.stream.playerId, "ROKU_X1", "player id")
+    tst.eq(r.media.stream.mode, "single", "mode")
+
+    ' enqueue_next_media with Python None leaking through as "None".
+    r = deeplink.parse({ u: url, t: "a", enqueue: "true", albumName: "None", albumArt: "None", duration: "None" }, hosts)
+    tst.eq(r.action, "enqueue", "enqueue action")
+    tst.eq(r.media.album, "", "None album cleaned")
+    tst.eq(r.media.art, "", "None art cleaned")
+    tst.eq(r.media.duration, invalid, "None duration cleaned")
+
+    ' Music Assistant's logo, its stand-in for a track without a cover.
+    maLogo = "https://raw.githubusercontent.com/music-assistant/server/refs/heads/dev/music_assistant/logo.png"
+    r = deeplink.parse({ u: url, t: "a", songName: "x", albumArt: maLogo }, hosts)
+    tst.eq(r.media.art, "", "MA logo art is no cover")
+    r = deeplink.parse({ u: url, t: "a", songName: "x", albumArt: "default" }, hosts)
+    tst.eq(r.media.art, "", "default art is no cover")
+
+    ' Stop: u is a single space.
+    r = deeplink.parse({ u: " ", t: "a", songName: "Music Assistant" }, hosts)
+    tst.eq(r.action, "stop", "stop action")
+
+    ' Host allowlist.
+    r = deeplink.parse({ u: "http://192.0.2.99/evil.mp3", t: "a" }, hosts)
+    tst.eq(r.action, "reject", "foreign host rejected")
+    r = deeplink.parse({ u: "http://192.0.2.99/ok.mp3", t: "a" }, [])
+    tst.eq(r.action, "play", "empty allowlist accepts")
+    tst.eq(r.media.format, "mp3", "format from extension")
+    tst.eq(r.media.stream, invalid, "non-MA url has no stream info")
+
+    ' Codec mismatch: MA says flac, URL says mp3.
+    r = deeplink.parse({ u: "http://192.168.1.10:8097/single/s/q/i/p.mp3", t: "a", songFormat: "flac" }, hosts)
+    tst.eq(r.media.format, "mp3", "extension wins over songFormat")
+    tst.eq(r.media.formatGuessed, false, "a known extension is no guess")
+
+    ' No known extension: MA's songFormat, else a guess the player reports.
+    r = deeplink.parse({ u: "http://192.168.1.10:8097/single/s/q/i/p", t: "a", songFormat: "aac" }, hosts)
+    tst.eq([r.media.format, r.media.formatGuessed], ["aac", false], "format from songFormat")
+    r = deeplink.parse({ u: "http://192.168.1.10:8097/single/s/q/i/p", t: "a" }, hosts)
+    tst.eq([r.media.format, r.media.formatGuessed], ["flac", true], "format guessed")
+
+    ' Metadata-only update and its "play instead" variant.
+    r = deeplink.parse({ t: "m", songName: "New Title" }, hosts)
+    tst.eq(r.action, "meta", "meta action")
+    tst.eq(r.media.title, "New Title", "meta title")
+    r = deeplink.parse({ t: "m", u: url }, hosts)
+    tst.eq(r.action, "play", "meta with url plays")
+
+    ' Other actions.
+    tst.eq(deeplink.parse({ a: "s" }, hosts).action, "skipToQueued", "skip to queued")
+    tst.eq(deeplink.parse({ t: "v", u: url }, hosts).action, "reject", "video rejected")
+    tst.eq(deeplink.parse(invalid, hosts).action, "none", "no params")
+    tst.eq(deeplink.parse({}, hosts).action, "none", "empty params")
+    r = deeplink.parse({ contentId: url, t: "a" }, hosts)
+    tst.eq(r.action, "play", "contentId accepted")
+
+    ' Debug params.
+    r = deeplink.parse({ masstv_log: "DEBUG", masstv_collector: "192.168.1.5:8765", mtv_reset: "1" }, hosts)
+    tst.eq(r.action, "debug", "debug-only link")
+    tst.eq(r.debug.log, "DEBUG", "debug log param")
+    tst.eq(r.debug.collector, "192.168.1.5:8765", "debug collector param")
+    tst.eq(r.debug.reset, invalid, "old mtv_ prefix ignored")
+
+    ' Same-item detection for seeks.
+    a = streamurl.parse(url)
+    b = streamurl.parse("http://192.168.1.10:8097/single/sess2/ROKU_X1/qi42/ROKU_X1.flac")
+    c = streamurl.parse("http://192.168.1.10:8097/single/sess2/ROKU_X1/qi43/ROKU_X1.flac")
+    tst.ok(streamurl.sameItem(a, b), "same item across sessions")
+    tst.ok(not streamurl.sameItem(a, c), "different item")
+    tst.eq(streamurl.parse("http://x/a/b"), invalid, "short path not MA")
+end sub

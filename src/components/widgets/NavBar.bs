@@ -1,0 +1,181 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/FocusRing.bs"
+import "pkg:/source/lib/Speech.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+const ITEM_SPACING = 48
+' The profile entry's right edge, in the entries' coordinates (x 1824 on
+' screen, the 96 px margin).
+const RIGHT_EDGE = 1464
+const OFFLINE_GAP = 24
+
+sub init()
+    m.items = m.top.findNode("items")
+    m.ring = m.top.findNode("ring")
+    m.offlineLabel = m.top.findNode("offline")
+    m.index = 0
+    m.boxes = []
+    m.top.ObserveField("focusedChild", "onFocusChange")
+    ' The bar speaks for itself (logFocus): Roku would read every entry.
+    m.top.muteAudioGuide = true
+end sub
+
+sub onEntries()
+    layout()
+end sub
+
+' Lays the entries out left to right, keeping each one's box for the ring.
+' The profile entry shows the profile name (its label only when there is
+' none) at the right end, with the OFFLINE marker to its left.
+sub layout()
+    m.items.removeChildrenIndex(m.items.getChildCount(), 0)
+    m.boxes = []
+    entries = m.top.entries
+    if entries = invalid then entries = []
+    x = 0
+    profileX = RIGHT_EDGE
+    for each e in entries
+        lbl = CreateObject("roSGNode", "Label")
+        lbl.font = "font:SmallBoldSystemFont"
+        isProfile = e.profile = true
+        ' A profile's name comes from Music Assistant.
+        if isProfile and m.top.profileName <> "" then fonts.label(lbl, m.top.profileName, true) else lbl.text = e.label
+        lbl.color = "#9A9FB0"
+        lbl.id = e.id
+        m.items.appendChild(lbl)
+        size = focusring.textSize(lbl)
+        lx = x
+        if isProfile
+            lx = RIGHT_EDGE - size.w
+            profileX = lx
+        else
+            x = x + size.w + ITEM_SPACING
+        end if
+        lbl.translation = [lx, 0]
+        m.boxes.Push({ x: lx, w: size.w, h: size.h })
+    end for
+    m.offlineLabel.visible = m.top.offline
+    if m.top.offline
+        w = focusring.textSize(m.offlineLabel).w
+        m.offlineLabel.translation = [m.items.translation[0] + profileX - OFFLINE_GAP - w, m.items.translation[1]]
+    end if
+    render()
+end sub
+
+sub onCurrent()
+    entries = m.top.entries
+    if entries = invalid then return
+    for i = 0 to entries.Count() - 1
+        if entries[i].id = m.top.current then m.index = i
+    end for
+    render()
+end sub
+
+sub onProfile()
+    layout()
+end sub
+
+' MainScene sets aimX just before giving the bar focus (Up from a screen):
+' start the cursor on the entry nearest above the screen's cursor, or on
+' the current screen's entry (-1: no useful x, e.g. a full-width row),
+' never wherever it was left last time.
+sub onAimX()
+    x = m.top.aimX
+    if x >= 0
+        m.index = entryNearest(x)
+    else
+        entries = m.top.entries
+        if entries <> invalid
+            for i = 0 to entries.Count() - 1
+                if entries[i].id = m.top.current then m.index = i
+            end for
+        end if
+    end if
+    log.debug("nav", "aim up", { x: x, entry: util.str(util.getPath(m.top.entries[m.index], "id"), "") })
+    render()
+end sub
+
+sub onFocusChange()
+    if m.top.hasFocus() then logFocus()
+    render()
+end sub
+
+function entryCenter(i as integer) as float
+    b = m.boxes[i]
+    return m.items.translation[0] + b.x + b.w / 2
+end function
+
+function entryNearest(x as float) as integer
+    best = m.index
+    for i = 0 to m.boxes.Count() - 1
+        if Abs(entryCenter(i) - x) < Abs(entryCenter(best) - x) then best = i
+    end for
+    return best
+end function
+
+' Logs the cursor's entry and says it: "Library, 2 of 7, current page";
+' the profile entry says the profile's name, then "Settings".
+sub logFocus()
+    entries = m.top.entries
+    if not util.isArray(entries) or m.index >= entries.Count() then return
+    e = entries[m.index]
+    log.debug("nav", "focus", { entry: e.id })
+    parts = []
+    if e.profile = true then parts.Push(m.top.profileName)
+    parts.Push(e.label)
+    parts.Push(speech.position(m.index, entries.Count()))
+    if e.id = m.top.current then parts.Push("current page")
+    speech.say(speech.join(parts))
+end sub
+
+' The current screen's entry is blue (selected), even under the cursor;
+' while the bar has focus, the cursor entry is inside the focus ring, in
+' white unless it's the current one.
+sub render()
+    focused = m.top.hasFocus()
+    for i = 0 to m.items.getChildCount() - 1
+        lbl = m.items.getChild(i)
+        cursor = i = m.index and focused
+        if lbl.id = m.top.current and cursor
+            lbl.color = focusring.SELECTED_TEXT
+        else if lbl.id = m.top.current
+            lbl.color = focusring.SELECTED
+        else if cursor
+            lbl.color = focusring.TEXT
+        else
+            lbl.color = focusring.PLAIN_TEXT
+        end if
+    end for
+    if m.index < m.boxes.Count() then m.top.cursorX = entryCenter(m.index)
+    if focused and m.index < m.boxes.Count()
+        b = m.boxes[m.index]
+        origin = m.items.translation
+        focusring.around(m.ring, origin[0] + b.x, origin[1], b.w, b.h)
+    else
+        m.ring.visible = false
+    end if
+end sub
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    n = m.items.getChildCount()
+    ' Left/Right wrap around the bar's ends (the profile name <-> Home).
+    if key = "left"
+        if m.index > 0 then m.index = m.index - 1 else m.index = n - 1
+        logFocus()
+        render()
+        return true
+    else if key = "right"
+        if m.index < n - 1 then m.index = m.index + 1 else m.index = 0
+        logFocus()
+        render()
+        return true
+    else if key = "OK"
+        m.top.selected = m.top.entries[m.index].id
+        return true
+    else if key = "up"
+        return true
+    end if
+    return false
+end function

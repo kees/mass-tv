@@ -1,0 +1,113 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/HttpMini.bs"
+import "pkg:/source/lib/DeepLink.bs"
+
+' Tiny HTTP/1.0 server over roStreamSocket, for use inside a Task thread.
+' One request per connection; the handler returns the full response string.
+'
+'   srv = sockserver.open(8888, port)
+'   ... in the Wait loop:
+'   if sockserver.handle(srv, msg, handlerFn) then ...
+namespace sockserver
+
+    function open(listenPort as integer, msgPort as object) as dynamic
+        sock = CreateObject("roStreamSocket")
+        addr = CreateObject("roSocketAddress")
+        addr.SetPort(listenPort)
+        sock.SetAddress(addr)
+        sock.SetMessagePort(msgPort)
+        sock.NotifyReadable(true)
+        if not sock.Listen(4)
+            print "[masstv sockserver] listen failed on port "; listenPort
+            sock.Close()
+            return invalid
+        end if
+        return { listen: sock, port: listenPort, msgPort: msgPort, conns: {} }
+    end function
+
+    sub close(srv as dynamic)
+        if srv = invalid then return
+        for each k in srv.conns
+            srv.conns[k].sock.Close()
+        end for
+        srv.conns.Clear()
+        srv.listen.Close()
+    end sub
+
+    ' Returns true if msg belonged to this server.
+    function handle(srv as dynamic, msg as dynamic, handler as dynamic) as boolean
+        if srv = invalid or type(msg) <> "roSocketEvent" then return false
+        sid = msg.GetSocketID()
+        if sid = srv.listen.GetID()
+            if srv.listen.IsReadable()
+                c = srv.listen.Accept()
+                if c <> invalid
+                    c.SetMessagePort(srv.msgPort)
+                    c.NotifyReadable(true)
+                    srv.conns[c.GetID().ToStr()] = { sock: c, buf: "", peer: sockserver.peerOf(c) }
+                end if
+            end if
+            return true
+        end if
+        key = sid.ToStr()
+        conn = srv.conns[key]
+        if conn = invalid then return false
+        if conn.sock.IsReadable()
+            n = conn.sock.GetCountRcvBuf()
+            if n <= 0
+                sockserver.drop(srv, key)
+                return true
+            end if
+            conn.buf = conn.buf + conn.sock.ReceiveStr(n)
+            req = httpmini.parseRequest(conn.buf)
+            if req <> invalid
+                if req.error <> invalid
+                    resp = httpmini.response(400, "text/plain", "bad request")
+                else
+                    req.peer = conn.peer
+                    resp = handler(req)
+                end if
+                sockserver.sendAll(conn.sock, resp)
+                sockserver.drop(srv, key)
+            end if
+        end if
+        return true
+    end function
+
+    sub drop(srv as object, key as string)
+        conn = srv.conns[key]
+        if conn <> invalid
+            conn.sock.Close()
+            srv.conns.Delete(key)
+        end if
+    end sub
+
+    sub sendAll(sock as object, text as string)
+        ba = CreateObject("roByteArray")
+        ba.FromAsciiString(text)
+        total = ba.Count()
+        offset = 0
+        attempts = 0
+        while offset < total and attempts < 200
+            sent = sock.Send(ba, offset, total - offset)
+            if sent > 0
+                offset = offset + sent
+            else
+                attempts = attempts + 1
+                Sleep(10)
+            end if
+        end while
+    end sub
+
+    ' Peer IP only: GetAddress() returns "ip:port" and the port comes back
+    ' as a signed 16-bit value on device, which is just noise in logs.
+    function peerOf(sock as object) as string
+        a = sock.GetReceivedFromAddress()
+        if a = invalid then return ""
+        addr = a.GetAddress()
+        colon = deeplink.lastIndexOf(addr, ":")
+        if colon > 0 then return Left(addr, colon - 1)
+        return addr
+    end function
+
+end namespace

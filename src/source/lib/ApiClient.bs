@@ -1,0 +1,81 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+
+' Render-thread helper for calling MA through the global ApiTask.
+'
+'   apic.call("players/all", {}, onPlayers)            ' handler(resp, ctx)
+'   apic.call("auth/me", {}, onMe, ctx, { token: t })   ' per-call options
+'
+' Handlers are function references in the calling component's scope. Every
+' component that uses this must import this file.
+namespace apic
+
+    sub attach()
+        if m.apicPending <> invalid then return
+        m.apicPending = {}
+        m.apicBacklog = []
+        m.apicSeq = 0
+        api = m.global.api
+        if api <> invalid
+            api.ObserveFieldScoped("response", "apic_onResponse")
+            if api.ready <> true then api.ObserveFieldScoped("ready", "apic_onReady")
+        end if
+    end sub
+
+    ' Requests made before the task is listening are held and sent here.
+    sub onReady()
+        api = m.global.api
+        if api = invalid or api.ready <> true then return
+        backlog = m.apicBacklog
+        m.apicBacklog = []
+        for each req in backlog
+            api.request = req
+        end for
+    end sub
+
+    function call(command as string, args as dynamic, handler as dynamic, ctx = invalid as dynamic, opts = invalid as dynamic) as string
+        apic.attach()
+        m.apicSeq = m.apicSeq + 1
+        id = log.threadTag() + "-" + m.apicSeq.ToStr() + "-" + util.randomHex(4)
+        ' Resolve server and token here, on the calling thread, so the task
+        ' never races a session change made just before this call.
+        session = m.global.session
+        req = { id: id, command: command, args: args, server: util.str(util.get(session, "server"), ""), token: util.str(util.get(session, "token"), "") }
+        if util.isAA(opts)
+            for each k in opts
+                req[k] = opts[k]
+            end for
+        end if
+        m.apicPending[id] = { handler: handler, ctx: ctx }
+        api = m.global.api
+        if api.ready = true
+            api.request = req
+        else
+            m.apicBacklog.Push(req)
+        end if
+        return id
+    end function
+
+    ' GET a path on the server without auth (e.g. /info).
+    function getPath(path as string, handler as dynamic, ctx = invalid as dynamic, serverUrl = "" as string) as string
+        opts = { method: "GET", path: path, noAuth: true }
+        if serverUrl <> "" then opts.server = serverUrl
+        return apic.call("", invalid, handler, ctx, opts)
+    end function
+
+    sub onResponse(event as object)
+        r = event.GetData()
+        if m.apicPending = invalid or not util.isAA(r) then return
+        p = m.apicPending[r.id]
+        if p = invalid then return
+        m.apicPending.Delete(r.id)
+        handler = p.handler
+        if handler <> invalid then handler(r, p.ctx)
+    end sub
+
+    ' Drops pending callbacks (e.g. when a screen is closed).
+    sub cancelAll()
+        if m.apicPending <> invalid then m.apicPending.Clear()
+    end sub
+
+end namespace

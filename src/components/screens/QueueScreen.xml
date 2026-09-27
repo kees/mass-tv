@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component name="QueueScreen" extends="BaseScreen">
+    <children>
+        <Label id="heading" text="Queue" translation="[96,24]" width="1000" color="#EEEEF6" font="font:MediumBoldSystemFont" />
+        <Label id="count" translation="[1124,28]" width="700" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" />
+        <MarkupList
+            id="list"
+            translation="[96,100]"
+            itemComponentName="TrackRow"
+            itemSize="[1728,70]"
+            itemSpacing="[0,4]"
+            numRows="10"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <ListFade id="listFade" />
+        <Label id="empty" translation="[96,220]" width="1728" color="#9A9FB0" font="font:MediumSystemFont" visible="false" text="The queue is empty." />
+        <LoadingIndicator id="loadingIndicator" translation="[96,120]" />
+    </children>
+</component>

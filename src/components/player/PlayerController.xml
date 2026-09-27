@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The MA player role. Owns the hidden Video node that
+     plays MA's streams, runs the pure playback state machine, and publishes
+     m.global.nowPlaying.
+
+     Inputs:
+       deeplink    raw ECP params from MA (launch or input)
+       command     "toggle" | "pause" | "resume" | "stop" | "restart"
+       seekSent    seconds; we asked MA to seek (server seek)
+       serverPos   seconds; server elapsed time for the current item
+       allowedHosts  stream hosts to accept (empty = any)
+-->
+<component name="PlayerController" extends="Group">
+    <interface>
+        <field id="deeplink" type="assocarray" alwaysNotify="true" onChange="onDeeplink" />
+        <field id="command" type="string" alwaysNotify="true" onChange="onCommand" />
+        <field id="seekSent" type="float" alwaysNotify="true" onChange="onSeekSent" />
+        <field id="serverPos" type="float" alwaysNotify="true" onChange="onServerPos" />
+        <field id="allowedHosts" type="array" />
+        <field id="syncRequest" type="boolean" alwaysNotify="true" />
+        <field id="advanceRequest" type="boolean" alwaysNotify="true" />
+    </interface>
+    <children>
+        <Video id="video" visible="false" width="1" height="1" enableUI="false" enableTrickPlay="false" />
+        <!-- After a track ends we ask MA for the next one; if MA hasn't sent
+             it by then, play the enqueued item ourselves. -->
+        <Timer id="nextTimer" repeat="false" duration="4" />
+    </children>
+</component>

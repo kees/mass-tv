@@ -1,0 +1,146 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/MaApi.bs"
+
+const MAX_INFLIGHT = 4
+const DEFAULT_TIMEOUT_MS = 10000
+
+sub init()
+    m.top.functionName = "runApi"
+end sub
+
+sub runApi()
+    m.logTag = "api"
+    port = CreateObject("roMessagePort")
+    m.top.ObserveField("request", port)
+    inflight = {}
+    pending = []
+    clock = CreateObject("roTimespan")
+    m.top.ready = true
+    log.info("api", "task started")
+    while true
+        msg = Wait(250, port)
+        mt = type(msg)
+        if mt = "roSGNodeEvent"
+            if msg.GetField() = "request"
+                req = msg.GetData()
+                if util.isAA(req) then pending.Push(req)
+            end if
+        else if mt = "roUrlEvent"
+            key = msg.GetSourceIdentity().ToStr()
+            entry = inflight[key]
+            if entry <> invalid
+                inflight.Delete(key)
+                finish(entry, msg, clock.TotalMilliseconds())
+            end if
+        end if
+
+        now = clock.TotalMilliseconds()
+        for each key in inflight.Keys()
+            entry = inflight[key]
+            if now - entry.startedAt > entry.timeoutMs
+                entry.xfer.AsyncCancel()
+                inflight.Delete(key)
+                respond(entry, -28, invalid, "timeout", now)
+            end if
+        end for
+
+        while pending.Count() > 0 and inflight.Count() < MAX_INFLIGHT
+            entry = start(pending.Shift(), port, now, inflight)
+            if entry <> invalid then inflight[entry.xfer.GetIdentity().ToStr()] = entry
+        end while
+    end while
+end sub
+
+' Requests carry their own server and token (filled in by ApiClient on the
+' calling thread).
+function start(req as object, port as object, now as integer, inflight as object) as dynamic
+    server = util.str(req.server, "")
+    token = util.str(req.token, "")
+    method = UCase(util.str(req.method, "POST"))
+    path = util.str(req.path, "/api")
+    timeoutMs = util.toInt(req.timeoutMs, DEFAULT_TIMEOUT_MS)
+    entry = { req: req, startedAt: now, timeoutMs: timeoutMs, xfer: invalid }
+    if server = ""
+        respond(entry, -1, invalid, "no server configured", now)
+        return invalid
+    end if
+
+    ' Replies are matched to requests by transfer identity, so it must be
+    ' unique among those in flight. The brs-cli simulator picks a random
+    ' identity from 0 to 79, which collided in about 7% of test runs and
+    ' silently dropped a reply; take a fresh transfer until it's unique.
+    xfer = CreateObject("roUrlTransfer")
+    tries = 1
+    while inflight.DoesExist(xfer.GetIdentity().ToStr()) and tries < 20
+        xfer = CreateObject("roUrlTransfer")
+        tries = tries + 1
+    end while
+    xfer.SetUrl(server + path)
+    xfer.SetPort(port)
+    xfer.RetainBodyOnError(true)
+    xfer.AddHeader("Accept", "application/json")
+    xfer.AddHeader("Accept-Language", "en-US")
+    if util.startsWith(LCase(server), "https")
+        xfer.SetCertificatesFile("common:/certs/ca-bundle.crt")
+        xfer.InitClientCertificates()
+    end if
+    if token <> "" and req.noAuth <> true then xfer.AddHeader("Authorization", "Bearer " + token)
+    entry.xfer = xfer
+
+    ok = false
+    if method = "GET"
+        ok = xfer.AsyncGetToString()
+    else
+        xfer.AddHeader("Content-Type", "application/json")
+        body = ma.requestBody(util.str(req.id, "0"), util.str(req.command, ""), req.args)
+        ok = xfer.AsyncPostFromString(body)
+    end if
+    if not ok
+        respond(entry, -2, invalid, "could not start request", now)
+        return invalid
+    end if
+    log.trace("api", "-> " + describe(req), { args: req.args })
+    return entry
+end function
+
+sub finish(entry as object, msg as object, now as integer)
+    code = msg.GetResponseCode()
+    body = msg.GetString()
+    if code >= 200 and code < 300
+        data = invalid
+        if body <> "" then data = ParseJson(body)
+        respond(entry, code, data, "", now, Len(body))
+    else
+        reason = body
+        if reason = "" then reason = msg.GetFailureReason()
+        respond(entry, code, invalid, reason, now, Len(body))
+    end if
+end sub
+
+sub respond(entry as object, code as integer, data as dynamic, errorText as string, now as integer, bytes = 0 as integer)
+    req = entry.req
+    kind = ma.classifyStatus(code)
+    ms = now - entry.startedAt
+    result = {
+        id: util.str(req.id, "")
+        command: util.str(req.command, util.str(req.path, ""))
+        ok: kind = "ok"
+        kind: kind
+        status: code
+        data: data
+        error: errorText
+        ms: ms
+    }
+    if kind = "ok"
+        log.debug("api", describe(req) + " ok", { ms: ms, bytes: bytes })
+    else
+        log.warn("api", describe(req) + " failed", { status: code, kind: kind, error: errorText, ms: ms })
+    end if
+    m.top.response = result
+end sub
+
+function describe(req as object) as string
+    if util.isNonEmptyString(req.command) then return req.command
+    return util.str(req.method, "POST") + " " + util.str(req.path, "/api")
+end function

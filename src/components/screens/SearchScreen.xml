@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Search via the Roku keyboard (which accepts voice from the remote's mic
+     on voice remotes). Results in rows by type. -->
+<component name="SearchScreen" extends="BaseScreen">
+    <children>
+        <!-- Our ButtonRow (a pill), not Roku's ButtonGroup: that one grabs
+             Up/Down itself, so Down never reached the results. -->
+        <ButtonRow id="searchButton" translation="[96,8]" minWidth="160" />
+        <!-- x set after the button (SearchScreen.bs); vertically centered on it. -->
+        <Label id="status" translation="[560,8]" width="1100" height="84" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+        <RowList
+            id="rows"
+            translation="[96,120]"
+            itemComponentName="PosterCard"
+            itemSize="[1824,396]"
+            itemSpacing="[0,16]"
+            numRows="2"
+            rowItemSize="[[240,320]]"
+            rowItemSpacing="[[32,0]]"
+            showRowLabel="[true]"
+            rowLabelOffset="[[0,8]]"
+            rowLabelColor="#9A9FB0"
+            rowLabelFont="font:MediumBoldSystemFont"
+            drawFocusFeedback="false"
+            rowFocusAnimationStyle="floatingFocus"
+            vertFocusAnimationStyle="floatingFocus" />
+    </children>
+</component>

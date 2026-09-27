@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One-shot HTTP listener for linking with a phone: the QR code's URL
+     redirects to the chosen server's login page, which returns a login
+     token to the listener. Start by setting `config` { port, nonce, rokuIp,
+     deviceName, server } and control = "RUN". Emits `event`:
+       { type: "listening", url }        the phone URL to show / encode as QR
+       { type: "opened" }                a phone opened it (sent to MA's login)
+       { type: "code", code }            MA redirected back with a login token
+       { type: "error", message }
+     Set `stop` = true to close the listener. -->
+<component name="PairingTask" extends="Task">
+    <interface>
+        <field id="config" type="assocarray" />
+        <field id="event" type="assocarray" alwaysNotify="true" />
+        <field id="stop" type="boolean" alwaysNotify="true" />
+    </interface>
+</component>

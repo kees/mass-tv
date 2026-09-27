@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Emulated bold for a label in the bundled font, which ships in one
+     weight (Roku can't embolden a font): a copy of the label, drawn as
+     its child a little to the right (two copies, at one and two steps),
+     so every stroke is thickened.
+     fonts.label adds it and sets `source` to the label; the twin then
+     follows the label's text, font, color, and layout on its own, and
+     fonts.label shows it only while the label uses the bundled font. -->
+<component name="BoldTwin" extends="Label">
+    <interface>
+        <field id="source" type="node" onChange="onSource" />
+        <!-- Which copy: 1 or 2 (drawn twice as far right). -->
+        <field id="nth" type="integer" value="1" />
+    </interface>
+</component>

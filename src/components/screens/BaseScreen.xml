@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Common screen contract with MainScene:
+       params        input; set once after creation (calls load())
+       navigate      output { screen, params, root? }
+       close         output; pop this screen
+       restoreFocus  input; this screen is on top again, refocus
+       focusedItem   output; the MA item under focus (Play key uses it)
+       focusedPlay   output; optional { media, startItem, sortBy } the Play key
+                     should play instead of focusedItem (e.g. album from a
+                     track; sortBy as in ma.playMediaArgs)
+       closing       input; the screen is being removed, release resources
+       focusX        output; the cursor's horizontal center on screen while
+                     it's on the screen's top row of text (Up to the nav bar
+                     aims there), or -1
+       aimX          input; set by MainScene before restoreFocus when coming
+                     Down from the nav bar: the nav cursor's center, for a
+                     screen that aims its top row (Library) -->
+
+<component name="BaseScreen" extends="Group">
+    <interface>
+        <field id="params" type="assocarray" />
+        <field id="navigate" type="assocarray" alwaysNotify="true" />
+        <field id="close" type="boolean" alwaysNotify="true" />
+        <field id="restoreFocus" type="boolean" alwaysNotify="true" onChange="onRestoreFocus" />
+        <field id="focusedItem" type="assocarray" onChange="onFocusedItem" />
+        <field id="focusedPlay" type="assocarray" />
+        <field id="closing" type="boolean" alwaysNotify="true" onChange="dropMenu" />
+        <field id="focusX" type="float" value="-1" />
+        <field id="aimX" type="float" value="-1" alwaysNotify="true" />
+    </interface>
+</component>

@@ -1,0 +1,139 @@
+const SEARCH_LIMIT = 12
+const SEARCH_RETRIES = 2
+
+sub init()
+    m.logTag = "search"
+    m.button = m.top.findNode("searchButton")
+    m.status = m.top.findNode("status")
+    m.rows = m.top.findNode("rows")
+    m.button.buttons = ["Search"]
+    m.button.ObserveField("selected", "askQuery")
+    m.rows.ObserveField("rowItemSelected", "onSelected")
+    m.rows.ObserveField("rowItemFocused", "onFocused")
+    speakLists([m.rows])
+    m.focusTarget = m.button
+    m.query = ""
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    q = util.str(util.get(m.top.params, "query"), "")
+    if q <> ""
+        runSearch(q)
+    else
+        askQuery()
+    end if
+end sub
+
+sub askQuery()
+    dlg = CreateObject("roSGNode", "StandardKeyboardDialog")
+    dlg.title = "Search"
+    dlg.message = ["Artists, albums, tracks, or playlists"]
+    dlg.text = m.query
+    dlg.buttons = ["Search", "Cancel"]
+    dlg.ObserveField("buttonSelected", "onQueryButton")
+    dlg.ObserveField("wasClosed", "onDialogClosed")
+    m.top.getScene().dialog = dlg
+end sub
+
+sub onQueryButton(event as object)
+    dlg = m.top.getScene().dialog
+    text = dlg.text.Trim()
+    dlg.close = true
+    if event.GetData() = 0 and text <> "" then runSearch(text)
+end sub
+
+sub onDialogClosed()
+    m.focusTarget.setFocus(true)
+end sub
+
+sub runSearch(q as string)
+    m.query = q
+    m.attempt = 0
+    m.status.text = "Searching for " + Chr(34) + q + Chr(34) + "…"
+    m.button.buttons = ["Search: " + q]
+    ' The count follows the button, however long the query.
+    m.status.translation = [96 + m.button.boundingRect().width + 32, m.status.translation[1]]
+    sendSearch()
+end sub
+
+sub sendSearch()
+    args = { search_query: m.query, media_types: ["artist", "album", "track", "playlist"], limit: SEARCH_LIMIT }
+    log.info("search", "query", { query: m.query, attempt: m.attempt })
+    apic.call("music/search", args, onResults, { query: m.query }, { timeoutMs: 30000 })
+end sub
+
+sub onResults(resp as object, ctx as object)
+    if ctx.query <> m.query then return
+    if not resp.ok or not util.isAA(resp.data)
+        m.status.text = "Search failed."
+        speech.say(m.status.text)
+        return
+    end if
+    r = resp.data
+    root = CreateObject("roSGNode", "ContentNode")
+    total = 0
+    for each group in [["artists", "Artists"], ["albums", "Albums"], ["tracks", "Tracks"], ["playlists", "Playlists"]]
+        items = util.get(r, group[0])
+        if util.isArray(items) and items.Count() > 0
+            row = root.CreateChild("ContentNode")
+            row.title = group[1]
+            for each item in items
+                row.appendChild(itemNode(item))
+            end for
+            total = total + items.Count()
+        end if
+    end for
+    ' A slow provider (often a streaming service) returns nothing on the first try while
+    ' the server keeps searching; retry like the web UI does.
+    if total = 0 and m.attempt < SEARCH_RETRIES
+        m.attempt = m.attempt + 1
+        m.status.text = "Still searching…"
+        sendSearch()
+        return
+    end if
+    m.rows.content = root
+    if total = 0
+        m.status.text = "No results for " + Chr(34) + m.query + Chr(34) + "."
+        speech.say(m.status.text)
+    else
+        if total = 1 then m.status.text = "1 result" else m.status.text = total.ToStr() + " results"
+        ' Said with the first result, as the rows take focus.
+        m.listLead = m.status.text
+        m.focusTarget = m.rows
+        m.rows.setFocus(true)
+        speakList(m.rows)
+    end if
+    log.info("search", "results", { query: m.query, total: total })
+end sub
+
+function focusedItemAt(rc as dynamic) as dynamic
+    if not util.isArray(rc) or m.rows.content = invalid then return invalid
+    row = m.rows.content.getChild(rc[0])
+    if row = invalid then return invalid
+    n = row.getChild(rc[1])
+    if n = invalid then return invalid
+    return n.item
+end function
+
+sub onFocused()
+    m.top.focusedItem = focusedItemAt(m.rows.rowItemFocused)
+end sub
+
+sub onSelected()
+    openItem(focusedItemAt(m.rows.rowItemSelected))
+end sub
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    if key = "down" and m.button.isInFocusChain() and m.rows.content <> invalid
+        m.focusTarget = m.rows
+        aim.moveFocus(m.button, m.rows)
+        return true
+    else if key = "up" and m.rows.isInFocusChain()
+        m.focusTarget = m.button
+        aim.moveFocus(m.rows, m.button)
+        return true
+    end if
+    return false
+end function

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A clickable row in a MarkupList: form, settings, and server rows, and
+     OptionsMenu's rows. Content nodes carry title, a `chosen` boolean
+     (chosen rows are blue, the "selected" idiom), and optionally `plain`
+     (OptionsMenu: a menu is a list, so its rows have no pill). Otherwise a
+     row rests on a pill with light text, so it reads as something to
+     press; focus draws the gray fill in the blue ring over it. Colors
+     follow FocusRing.bs: white under the ring; blue if chosen, a stronger
+     blue under the ring. -->
+<component name="MenuRow" extends="Group">
+    <interface>
+        <field id="itemContent" type="node" onChange="onContent" />
+        <field id="width" type="float" onChange="onSize" />
+        <field id="height" type="float" onChange="onSize" />
+        <field id="focusPercent" type="float" onChange="render" />
+        <field id="itemHasFocus" type="boolean" onChange="render" />
+        <field id="listHasFocus" type="boolean" onChange="render" />
+    </interface>
+    <children>
+        <Poster id="pill" uri="pkg:/images/pill.9.png" />
+        <Poster id="bg" uri="pkg:/images/focus_row.9.png" opacity="0" />
+        <Label id="label" translation="[24,0]" vertAlign="center" font="font:MediumSystemFont" />
+    </children>
+</component>

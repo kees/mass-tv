@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Edge fades for a vertical list (MarkupList): the top visible row fades
+     in when rows are hidden above it, the bottom visible row fades out
+     when rows continue below it. Add it as a sibling after the list, in
+     the same parent, and set `list`; it takes the list's position and
+     geometry and follows its focus and content.
+
+     list   input: the MarkupList to decorate -->
+<component name="ListFade" extends="Group">
+    <interface>
+        <field id="list" type="node" onChange="onList" />
+    </interface>
+    <children>
+        <Poster id="top" uri="pkg:/images/fade_top.png" loadDisplayMode="scaleToFill" visible="false" />
+        <Poster id="bottom" uri="pkg:/images/fade_bottom.png" loadDisplayMode="scaleToFill" visible="false" />
+    </children>
+</component>

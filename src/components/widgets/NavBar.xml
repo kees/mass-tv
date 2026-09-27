@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Top navigation. MainScene moves focus here with Up from a screen's top
+     edge. `selected` fires with the chosen entry id. An entry with
+     profile: true shows `profileName` at the bar's right end (Settings,
+     which is mostly about the profile and its server). -->
+<component name="NavBar" extends="Group">
+    <interface>
+        <field id="entries" type="array" onChange="onEntries" />
+        <field id="current" type="string" onChange="onCurrent" />
+        <field id="selected" type="string" alwaysNotify="true" />
+        <field id="profileName" type="string" onChange="onProfile" />
+        <!-- True while Music Assistant can't be reached; shown next to the
+             profile name until it answers again. -->
+        <field id="offline" type="boolean" onChange="onProfile" />
+        <!-- Set just before the bar gains focus: the x the cursor should
+             start nearest (the screen's cursor below), or -1 for the
+             current screen's entry. Setting it places the cursor. -->
+        <field id="aimX" type="float" value="-1" alwaysNotify="true" onChange="onAimX" />
+        <!-- Output: the cursor entry's horizontal center on screen. -->
+        <field id="cursorX" type="float" value="-1" />
+    </interface>
+    <children>
+        <Rectangle id="bar" color="#101418" width="1920" height="96" />
+        <!-- The logo's wordmark (Roboto Bold in the logo's white, from
+             make_images.py), at the size of the system-font text it
+             replaced: capitals 25 px tall (26 with their smoothed edges),
+             top at y 32. -->
+        <Poster id="brand" uri="pkg:/images/wordmark_nav_$$RES$$.png" translation="[99,32]" width="136" height="26" />
+        <!-- The cursor's focus ring (only while the bar has focus), behind
+             the entries. NavBar.bs lays the entries out and places it. -->
+        <Poster id="ring" uri="pkg:/images/focus_ring.9.png" visible="false" />
+        <Group id="items" translation="[360,30]" />
+        <!-- Left of the profile entry while Music Assistant can't be
+             reached (placed by NavBar.bs). -->
+        <Label id="offline" text="OFFLINE" visible="false" color="#F07A6A" font="font:SmallBoldSystemFont" />
+    </children>
+</component>

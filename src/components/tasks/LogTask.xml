@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-build log hub. Every thread's log.* calls set `entry`; this task
+     keeps a ring buffer, serves it over HTTP (pull), and optionally pushes
+     batches to a collector.
+
+     Pull endpoints on http://<roku-ip>:<pullPort>/ :
+       GET /             HTML view of recent entries (auto-refresh)
+       GET /log?since=N  JSON lines with sequence numbers > N
+       GET /state        JSON snapshot of session, player, and queue state
+       GET /level?set=DEBUG   change the log level at runtime
+-->
+<component name="LogTask" extends="Task">
+    <interface>
+        <field id="entry" type="assocarray" alwaysNotify="true" />
+        <field id="config" type="assocarray" alwaysNotify="true" />
+    </interface>
+</component>

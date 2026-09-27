@@ -1,0 +1,393 @@
+import "pkg:/source/lib/Util.bs"
+
+' Music Assistant API helpers: request bodies, status classification, item
+' URIs and display text, play arguments, schema gating, and elapsed time.
+' Transport lives in components/tasks/ApiTask.
+namespace ma
+
+    ' Schema versions that gate features.
+    const SCHEMA_SHUFFLE_ARG = 51
+    const SCHEMA_BROWSE_PLAYER_ID = 61
+    const SCHEMA_MIN_SUPPORTED = 61
+
+    ' Playlist track order "recently added first", as MA's play_media
+    ' sort_by and the web UI name it. Needs an MA with the timestamp_added
+    ' sort keys and playlist tracks' date_added (music-assistant/server
+    ' PRs #6455 and #6457).
+    const SORT_NEWEST = "timestamp_added_desc"
+
+    ' Whether any of these tracks carries a date_added (playlist tracks
+    ' from a provider that reports when each was added).
+    function hasDateAdded(tracks as dynamic) as boolean
+        if not util.isArray(tracks) then return false
+        for each t in tracks
+            if util.isNonEmptyString(util.get(t, "date_added")) then return true
+        end for
+        return false
+    end function
+
+    ' Tracks ordered by date_added, newest first. The sort is stable, so
+    ' tracks added together keep their playlist order (as streaming apps
+    ' and MA's play order do); tracks without a date sort last. MA sends
+    ' date_added as UTC ISO 8601 text, so the strings compare in time order.
+    function sortNewestFirst(tracks as object) as object
+        keyed = []
+        for each t in tracks
+            keyed.Push({ key: util.str(util.get(t, "date_added"), ""), item: t })
+        end for
+        sorted = ma.mergeByKeyDesc(keyed)
+        out = []
+        for each k in sorted
+            out.Push(k.item)
+        end for
+        return out
+    end function
+
+    ' Stable merge sort of { key, item } entries by key, descending.
+    function mergeByKeyDesc(list as object) as object
+        n = list.Count()
+        if n < 2 then return list
+        mid = n \ 2
+        left = []
+        right = []
+        for i = 0 to n - 1
+            if i < mid then left.Push(list[i]) else right.Push(list[i])
+        end for
+        left = ma.mergeByKeyDesc(left)
+        right = ma.mergeByKeyDesc(right)
+        out = []
+        li = 0
+        ri = 0
+        while li < left.Count() and ri < right.Count()
+            ' Take from the right only when strictly newer, so ties keep
+            ' their original order.
+            if right[ri].key > left[li].key
+                out.Push(right[ri])
+                ri = ri + 1
+            else
+                out.Push(left[li])
+                li = li + 1
+            end if
+        end while
+        while li < left.Count()
+            out.Push(left[li])
+            li = li + 1
+        end while
+        while ri < right.Count()
+            out.Push(right[ri])
+            ri = ri + 1
+        end while
+        return out
+    end function
+
+    function requestBody(id as string, command as string, args as dynamic) as string
+        body = { message_id: id, command: command }
+        if args <> invalid then body.args = args else body.args = {}
+        return FormatJson(body)
+    end function
+
+    ' Maps an HTTP status (or roUrlTransfer failure code) to a result kind.
+    function classifyStatus(code as integer) as string
+        if code >= 200 and code < 300 then return "ok"
+        if code = 401 then return "auth"
+        if code = 403 then return "forbidden"
+        if code = 400 then return "badrequest"
+        if code = 503 then return "setup"
+        if code >= 500 then return "server"
+        if code = -28 then return "timeout"
+        if code < 0 then return "network"
+        return "http"
+    end function
+
+    ' What a command was trying to do, for error messages ("skip ahead").
+    function commandPhrase(command as string) as string
+        phrases = {
+            "player_queues/play_media": "start playback"
+            "player_queues/next": "skip ahead"
+            "player_queues/previous": "go back"
+            "player_queues/seek": "seek"
+            "player_queues/play": "resume playback"
+            "player_queues/play_pause": "play or pause"
+            "player_queues/stop": "stop playback"
+            "player_queues/shuffle": "change shuffle"
+            "player_queues/repeat": "change repeat"
+            "player_queues/play_index": "play that track"
+            "player_queues/move_item": "move that track"
+            "player_queues/delete_item": "remove that track"
+            "music/favorites/add_item": "add that to favorites"
+            "music/favorites/remove_item": "remove that from favorites"
+            "music/get_library_item": "update favorites"
+        }
+        p = phrases[command]
+        if p <> invalid then return p
+        return "do that"
+    end function
+
+    ' A user-facing message for a failed action, or "" when the failure is a
+    ' connection problem (reported once by the connection status instead of
+    ' per action).
+    function errorMessage(kind as string, command as string, errorText as dynamic) as string
+        phrase = ma.commandPhrase(command)
+        if kind = "network" or kind = "timeout" then return ""
+        if kind = "forbidden" then return "Your profile isn't allowed to " + phrase + "."
+        if kind = "auth" then return "This profile's link expired. Link it again in Settings."
+        if kind = "setup" then return "Music Assistant is still starting up. Try again in a moment."
+        detail = util.str(errorText, "").Trim()
+        if detail = "Internal server error" then detail = ""
+        if Len(detail) > 80 then detail = Left(detail, 77) + "..."
+        msg = "Music Assistant couldn't " + phrase + "."
+        if detail <> "" then msg = msg + " (" + detail + ")"
+        return msg
+    end function
+
+    function uriOf(item as dynamic) as string
+        if not util.isAA(item) then return ""
+        if util.isNonEmptyString(item.uri) then return item.uri
+        mt = util.str(item.media_type, "")
+        prov = util.str(item.provider, "library")
+        id = util.str(item.item_id, "")
+        if mt = "" or id = "" then return ""
+        return prov + "://" + mt + "/" + id
+    end function
+
+    function mediaTypeOf(item as dynamic) as string
+        return util.str(util.get(item, "media_type"), "")
+    end function
+
+    function isPlayable(item as dynamic) as boolean
+        if not util.isAA(item) then return false
+        if item.is_playable = false then return false
+        mt = ma.mediaTypeOf(item)
+        return mt = "track" or mt = "album" or mt = "artist" or mt = "playlist" or mt = "radio" or mt = "podcast" or mt = "podcast_episode" or mt = "audiobook" or mt = "genre"
+    end function
+
+    function isFolder(item as dynamic) as boolean
+        return ma.mediaTypeOf(item) = "folder"
+    end function
+
+    ' "Artist A, Artist B" from an item's artists list.
+    function artistNames(item as dynamic) as string
+        artists = util.get(item, "artists")
+        if not util.isArray(artists) then return util.str(util.get(item, "artist_str"), "")
+        names = []
+        for each a in artists
+            n = util.str(util.get(a, "name"), "")
+            if n <> "" then names.Push(n)
+        end for
+        return names.Join(", ")
+    end function
+
+    function titleOf(item as dynamic) as string
+        name = util.str(util.get(item, "name"), "")
+        version = util.str(util.get(item, "version"), "")
+        if version <> "" then return name + " (" + version + ")"
+        return name
+    end function
+
+    ' Title and second line for what's playing, formatted like track rows
+    ' (titleOf, subtitleOf) from the polled queue's current item when it is
+    ' the item playing. Otherwise MA's stream metadata, which has the name
+    ' without its version and MA's own artist string.
+    function nowPlayingText(np as dynamic, queue as dynamic) as object
+        out = { title: util.str(util.get(np, "title"), ""), line2: util.str(util.get(np, "artist"), "") }
+        cur = util.get(queue, "current_item")
+        if not util.isAA(cur) then return out
+        if util.str(util.get(cur, "queue_item_id"), "") <> util.str(util.get(np, "queueItemId"), "") then return out
+        mi = util.get(cur, "media_item")
+        if not util.isAA(mi) then return out
+        title = ma.titleOf(mi)
+        if title <> "" then out.title = title
+        line2 = ma.subtitleOf(mi)
+        if line2 <> "" then out.line2 = line2
+        return out
+    end function
+
+    ' Second line for cards and rows.
+    function subtitleOf(item as dynamic) as string
+        mt = ma.mediaTypeOf(item)
+        if mt = "track"
+            artists = ma.artistNames(item)
+            album = util.str(util.getPath(item, "album.name"), "")
+            if artists <> "" and album <> "" then return artists + " · " + album
+            if artists <> "" then return artists
+            return album
+        end if
+        if mt = "album"
+            artists = ma.artistNames(item)
+            year = util.get(item, "year")
+            if util.isNumber(year) and year > 0
+                if artists <> "" then return artists + " · " + year.ToStr()
+                return year.ToStr()
+            end if
+            return artists
+        end if
+        if mt = "playlist"
+            owner = util.str(util.get(item, "owner"), "")
+            if owner <> "" then return owner
+            return "Playlist"
+        end if
+        if mt = "artist" then return "Artist"
+        if mt = "radio" then return "Radio"
+        if mt = "folder" then return ""
+        return util.str(util.get(item, "subtitle"), "")
+    end function
+
+    ' Arguments for player_queues/play_media. option: play|replace|next|
+    ' replace_next|add, or "" for the server default. sortBy: a track order
+    ' MA applies before start_item (e.g. ma.SORT_NEWEST), or "".
+    function playMediaArgs(queueId as string, media as dynamic, option as string, startItem as string, shuffle as boolean, schema as integer, sortBy = "" as string) as object
+        args = { queue_id: queueId, media: media }
+        if option <> "" then args.option = option
+        if startItem <> "" then args.start_item = startItem
+        if sortBy <> "" then args.sort_by = sortBy
+        if shuffle
+            if schema >= ma.SCHEMA_SHUFFLE_ARG
+                args.shuffle = true
+                if option = "" then args.option = "replace"
+            end if
+        end if
+        return args
+    end function
+
+    ' URI for "start radio" (MA's endless mix) from a seed item.
+    function radioUri(seed as dynamic) as string
+        uri = ma.uriOf(seed)
+        if uri = "" then return ""
+        return "radio_playlist://playlist/" + uri
+    end function
+
+    ' A provider's Flow playlist URI for a provider instance id like "example_music--AbCdEf".
+    function flowUri(instanceId as string) as string
+        return instanceId + "://playlist/flow"
+    end function
+
+    function browseArgs(path as dynamic, playerId as string, schema as integer) as object
+        args = {}
+        if util.isNonEmptyString(path) then args.path = path
+        if playerId <> "" and schema >= ma.SCHEMA_BROWSE_PLAYER_ID then args.player_id = playerId
+        return args
+    end function
+
+    ' Position of a queue in seconds, from its anchor.
+    ' serverNowSec: current server time in seconds (local clock + offset).
+    function elapsedOf(queue as dynamic, serverNowSec as double) as double
+        if not util.isAA(queue) then return 0
+        base = util.get(queue, "elapsed_time", 0)
+        if not util.isNumber(base) then base = 0
+        state = util.str(util.get(queue, "state"), "")
+        if state <> "playing" then return base
+        anchor = util.get(queue, "elapsed_time_last_updated", 0)
+        speed = util.get(queue, "playback_speed", 1)
+        if not util.isNumber(anchor) or anchor <= 0 then return base
+        if not util.isNumber(speed) then speed = 1
+        delta = serverNowSec - anchor
+        if delta < 0 then delta = 0
+        return base + delta * speed
+    end function
+
+    ' Picks the queue id to target for a player.
+    function queueIdForPlayer(player as dynamic) as string
+        if not util.isAA(player) then return ""
+        src = util.str(util.get(player, "active_source"), "")
+        if src <> "" then return src
+        return util.str(util.get(player, "player_id"), "")
+    end function
+
+    ' Finds this Roku among players/all: a player that reaches a Roku
+    ' through the Media Assistant (Roku) provider, matched by IP address,
+    ' else by name. Music Assistant can list such a player under another
+    ' provider, with the Roku provider among its output protocols.
+    function findRokuPlayer(players as dynamic, myIps as object, myName as string) as dynamic
+        if not util.isArray(players) then return invalid
+        byName = invalid
+        for each p in players
+            if ma.isRokuPlayer(p)
+                ip = ma.playerIp(p)
+                for each mine in myIps
+                    if ip <> "" and ip = mine then return p
+                end for
+                if byName = invalid and myName <> "" and util.str(util.get(p, "name"), "") = myName then byName = p
+            end if
+        end for
+        return byName
+    end function
+
+    function isRokuPlayer(p as dynamic) as boolean
+        if util.startsWith(util.str(util.get(p, "provider"), ""), "roku_media_assistant") then return true
+        protocols = util.get(p, "output_protocols")
+        if util.isArray(protocols)
+            for each proto in protocols
+                if util.startsWith(util.str(util.get(proto, "protocol_domain"), ""), "roku_media_assistant") then return true
+            end for
+        end if
+        return false
+    end function
+
+    ' A player's IP address: in device_info's identifiers, or device_info
+    ' itself.
+    function playerIp(p as dynamic) as string
+        ip = util.str(util.getPath(p, "device_info.identifiers.ip_address"), "")
+        if ip = "" then ip = util.str(util.getPath(p, "device_info.ip_address"), "")
+        return ip
+    end function
+
+    ' The players as a short list for the log, when this Roku isn't found
+    ' among them (what was there, not just that it failed).
+    function playerSummary(players as dynamic) as object
+        out = []
+        if not util.isArray(players) then return out
+        for each p in players
+            out.Push({ id: util.str(util.get(p, "player_id"), ""), provider: util.str(util.get(p, "provider"), ""), name: util.str(util.get(p, "name"), ""), ip: ma.playerIp(p), roku: ma.isRokuPlayer(p) })
+        end for
+        return out
+    end function
+
+    ' Whether a player ID is among players/all.
+    function hasPlayer(players as dynamic, playerId as string) as boolean
+        if not util.isArray(players) then return false
+        for each p in players
+            if util.str(util.get(p, "player_id"), "") = playerId then return true
+        end for
+        return false
+    end function
+
+    ' An item's description as one paragraph of plain text, or "" if it
+    ' has none: metadata.description (an artist's biography, an album's
+    ' summary, from the music source or a metadata provider such as
+    ' TheAudioDB), except that an album's review comes first, as in MA's
+    ' web UI.
+    function descriptionOf(item as dynamic) as string
+        text = ""
+        if ma.mediaTypeOf(item) = "album" then text = util.str(util.getPath(item, "metadata.review"), "")
+        if text = "" then text = util.str(util.getPath(item, "metadata.description"), "")
+        return ma.plainText(text)
+    end function
+
+    ' MA's web UI renders descriptions as Markdown (and they may carry
+    ' HTML); a Label shows plain text. Keeps link text, drops link targets,
+    ' tags, and emphasis marks, decodes common entities, and joins lines.
+    function plainText(text as string) as string
+        s = text
+        ' [text](url) -> text, one link at a time: brs-cli's roRegex has
+        ' no \1 back-references in ReplaceAll (a real Roku does).
+        link = CreateObject("roRegex", "\[([^\]]*)\]\([^)]*\)", "")
+        for i = 1 to 100
+            found = link.Match(s)
+            if found.Count() < 2 then exit for
+            s = s.Replace(found[0], found[1])
+        end for
+        s = CreateObject("roRegex", "<[^>]*>", "").ReplaceAll(s, " ")
+        s = CreateObject("roRegex", "(\*\*|__|^#+ )", "m").ReplaceAll(s, "")
+        entities = [["&nbsp;", " "], ["&quot;", Chr(34)], ["&#39;", "'"], ["&apos;", "'"], ["&lt;", "<"], ["&gt;", ">"], ["&amp;", "&"]]
+        for each e in entities
+            s = s.Replace(e[0], e[1])
+        end for
+        s = CreateObject("roRegex", "\s+", "").ReplaceAll(s, " ")
+        ' A tag became a space; don't leave one before punctuation.
+        for each p in [".", ",", ";", ":", "!", "?"]
+            s = s.Replace(" " + p, p)
+        end for
+        return s.Trim()
+    end function
+
+end namespace

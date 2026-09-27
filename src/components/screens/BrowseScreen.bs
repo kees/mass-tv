@@ -1,0 +1,128 @@
+' Room the hint takes at the right of the heading line.
+const HINT_ROOM = 440
+const HEADING_WIDTH = 1728
+const SEPARATOR = " › "
+
+sub init()
+    m.logTag = "browse"
+    m.heading = m.top.findNode("heading")
+    m.trailLabel = m.top.findNode("trail")
+    m.hint = m.top.findNode("hint")
+    m.trail = []
+    m.titleText = ""
+    m.list = m.top.findNode("list")
+    m.top.findNode("listFade").list = m.list
+    m.empty = m.top.findNode("empty")
+    m.loadingIndicator = m.top.findNode("loadingIndicator")
+    m.list.ObserveField("itemSelected", "onSelected")
+    m.list.ObserveField("itemFocused", "onFocused")
+    speakLists([m.list])
+    m.focusTarget = m.list
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    p = m.top.params
+    m.path = util.str(util.get(p, "path"), "")
+    m.titleText = util.str(util.get(p, "title"), "Browse")
+    m.trail = util.get(p, "trail")
+    if not util.isArray(m.trail) then m.trail = []
+    renderHeading()
+    m.content = CreateObject("roSGNode", "ContentNode")
+    m.list.content = m.content
+    playerId = util.str(util.get(m.global.session, "playerId"), "")
+    m.loadingIndicator.active = true
+    apic.call("music/browse", ma.browseArgs(m.path, playerId, actions.schema()), onItems, invalid, { timeoutMs: 20000 })
+end sub
+
+sub onItems(resp as object, ctx as dynamic)
+    m.loadingIndicator.active = false
+    if not resp.ok or not util.isArray(resp.data)
+        showEmpty("Couldn't load this folder.")
+        return
+    end if
+    for each item in resp.data
+        if util.str(util.get(item, "item_id"), "") <> "back" and util.str(util.get(item, "name"), "") <> ".."
+            n = itemNode(item, 80)
+            if ma.isFolder(item)
+                n.ShortDescriptionLine1 = "›"
+                n.description = util.str(util.get(item, "label"), "")
+                speech.describeRow(n, invalid, "folder")
+            else
+                n.ShortDescriptionLine1 = ""
+                d = util.get(item, "duration")
+                if util.isNumber(d) and d > 0 then n.ShortDescriptionLine2 = util.formatDuration(d)
+                if n.description = "" then n.description = ma.mediaTypeOf(item)
+                speech.describeRow(n, d)
+            end if
+            m.content.appendChild(n)
+        end if
+    end for
+    if m.content.getChildCount() = 0 then showEmpty("This folder is empty.")
+    speakList(m.list, true)
+    log.debug("browse", "loaded", { path: m.path, items: m.content.getChildCount() })
+end sub
+
+' "Browse › <source> › " (dim) then "Made For You" (bright). When it's too
+' long, the oldest levels give way to "…" so the current one stays whole.
+sub renderHeading()
+    atTop = m.trail.Count() = 0
+    m.hint.visible = not atTop
+    room = HEADING_WIDTH
+    if not atTop then room = HEADING_WIDTH - HINT_ROOM
+    fonts.label(m.heading, m.titleText, true)
+    m.heading.width = 0
+    titleW = m.heading.boundingRect().width
+    parts = []
+    for each t in m.trail
+        parts.Push(t)
+    end for
+    cut = false
+    trailW = 0
+    while true
+        text = ""
+        if parts.Count() > 0 then text = parts.Join(SEPARATOR) + SEPARATOR
+        if cut then text = "…" + SEPARATOR + text
+        fonts.label(m.trailLabel, text)
+        m.trailLabel.width = 0
+        trailW = 0
+        if text <> "" then trailW = m.trailLabel.boundingRect().width
+        if trailW + titleW <= room or parts.Count() = 0 then exit while
+        parts.Shift()
+        cut = true
+    end while
+    m.heading.translation = [96 + trailW, 24]
+    m.heading.width = room - trailW
+    log.debug("browse", "heading", { trail: m.trail, title: m.titleText, shown: m.trailLabel.text })
+end sub
+
+sub showEmpty(text as string)
+    m.empty.text = text
+    m.empty.visible = true
+end sub
+
+function itemAt(idx as integer) as dynamic
+    n = m.content.getChild(idx)
+    if n = invalid then return invalid
+    return n.item
+end function
+
+sub onFocused()
+    m.top.focusedItem = itemAt(m.list.itemFocused)
+end sub
+
+sub onSelected()
+    item = itemAt(m.list.itemSelected)
+    if ma.isFolder(item)
+        ' Carry the breadcrumb down a level.
+        trail = []
+        for each t in m.trail
+            trail.Push(t)
+        end for
+        trail.Push(m.titleText)
+        log.debug("screen", "open folder", { uri: ma.uriOf(item), name: util.get(item, "name") })
+        go("browse", { path: util.str(item.path, ""), title: ma.titleOf(item), trail: trail })
+        return
+    end if
+    openItem(item)
+end sub

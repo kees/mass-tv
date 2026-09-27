@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Transient message; set `text` to show it for a few seconds. -->
+<component name="Toast" extends="Group">
+    <interface>
+        <field id="text" type="string" alwaysNotify="true" onChange="onText" />
+    </interface>
+    <children>
+        <Rectangle id="bg" color="#2A313BEE" width="800" height="72" translation="[560,0]" />
+        <Label id="label" width="760" height="72" translation="[580,0]" horizAlign="center" vertAlign="center" color="#FFFFFF" font="font:SmallSystemFont" />
+        <Timer id="timer" duration="3" />
+    </children>
+</component>

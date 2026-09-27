@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A cover image with the missing-cover fallback, the one place that
+     logic lives: with no `uri`, or when it fails to load, the dim Mass TV
+     emblem (`placeholderUri`) shows instead. Every cover (cards, track
+     rows, Detail's header, Now Playing and its ambient view) uses it.
+
+     uri               the cover to show ("" for none)
+     placeholderUri    the placeholder image for this size and use
+     width, height     the size of the cover (and placeholder)
+     loadSize          decode size (loadWidth/loadHeight), 0 = full size
+     boxColor          optional fill behind the cover while it loads
+     placeholderShown  output: true while the placeholder shows -->
+<component name="CoverArt" extends="Group">
+    <interface>
+        <!-- alwaysNotify: "" on a new CoverArt (already "") must still
+             show the placeholder. -->
+        <field id="uri" type="string" onChange="onUri" alwaysNotify="true" />
+        <field id="placeholderUri" type="string" onChange="onPlaceholderUri" />
+        <field id="width" type="float" onChange="onSize" />
+        <field id="height" type="float" onChange="onSize" />
+        <field id="loadSize" type="integer" onChange="onSize" />
+        <field id="boxColor" type="string" onChange="onBoxColor" />
+        <field id="placeholderShown" type="boolean" alwaysNotify="true" />
+    </interface>
+    <children>
+        <Rectangle id="box" visible="false" />
+        <Poster id="placeholder" visible="false" loadDisplayMode="scaleToFill" />
+        <Poster id="cover" loadDisplayMode="scaleToFill" />
+    </children>
+</component>

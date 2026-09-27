@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- One mDNS query (legacy unicast to 224.0.0.251:5353 from an ephemeral
+     port), collecting answers for a few seconds. Set `request`
+     { name, type ("PTR", "SRV", "TXT", "A", "ANY"), seconds, to } and
+     control = "RUN"; `to` ("host:port", optional) sends the query there
+     instead of the mDNS group (tests). `result` fires once when done:
+       { ok, error, sent, replies: [{ from, records }] }
+     where records are mdns.parse() records. -->
+<component name="MdnsTask" extends="Task">
+    <interface>
+        <field id="request" type="assocarray" />
+        <field id="result" type="assocarray" alwaysNotify="true" />
+    </interface>
+</component>

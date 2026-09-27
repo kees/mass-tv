@@ -1,0 +1,51 @@
+sub mdnsTests()
+    tst.begin("mdns")
+    q = mdns.query("_mass._tcp.local", mdns.typeCode("PTR"), &h1234)
+    tst.eq(q.ToHexString(), "123400000001000000000000055F6D617373045F746370056C6F63616C00000C0001", "PTR query bytes")
+    tst.eq(mdns.typeCode("srv"), 33, "type code")
+    tst.eq(mdns.typeName(16), "TXT", "type name")
+    tst.eq(mdns.typeName(47), "47", "unknown type name")
+
+    ' A _mass._tcp reply: PTR, SRV, TXT, and A, with name compression.
+    b = CreateObject("roByteArray")
+    b.FromHexString("123484000000000400000000055F6D617373045F746370056C6F63616C00000C000100001194000A0754657374204D41C00CC0280021800100000078000F000000001F9F066D61686F7374C017C02800108001000011940031107365727665725F69643D6162633132331F626173655F75726C3D687474703A2F2F3139322E302E322E31303A38303935C04400018001000000780004C000020A")
+    r = mdns.parse(b, b.Count())
+    tst.ok(r <> invalid, "parsed")
+    if r = invalid then return
+    tst.eq(r.id, &h1234, "id")
+    tst.eq(r.response, true, "is a response")
+    tst.eq(r.records.Count(), 4, "record count")
+    tst.eq(r.records[0], { type: "PTR", name: "_mass._tcp.local", ttl: 4500, value: "Test MA._mass._tcp.local" }, "PTR")
+    tst.eq(r.records[1].value, { target: "mahost.local", port: 8095 }, "SRV")
+    tst.eq(r.records[1].name, "Test MA._mass._tcp.local", "SRV name via pointer")
+    tst.eq(r.records[2].value, ["server_id=abc123", "base_url=http://192.0.2.10:8095"], "TXT")
+    tst.eq(r.records[3], { type: "A", name: "mahost.local", ttl: 120, value: "192.0.2.10" }, "A")
+
+    ' Truncated or looping packets are rejected, not crashed on.
+    tst.eq(mdns.parse(b, 40), invalid, "truncated")
+    tst.eq(mdns.parse(b, 5), invalid, "too short")
+    loop = CreateObject("roByteArray")
+    loop.FromHexString("000084000000000100000000C00C")
+    tst.eq(mdns.parse(loop, loop.Count()), invalid, "pointer loop")
+
+    ' Servers from replies: TXT base_url wins over the A record.
+    tst.eq(mdns.massServers([{ from: "192.0.2.10:5353", records: r.records }]), [{ id: "abc123", name: "Test MA", server: "http://192.0.2.10:8095" }], "server from the parsed reply")
+    ptr = { type: "PTR", name: "_mass._tcp.local", value: "srv1._mass._tcp.local" }
+    srv = { type: "SRV", name: "srv1._mass._tcp.local", value: { target: "mass.local", port: 8095 } }
+    bridge = { type: "A", name: "mass.local", value: "198.51.100.2" }
+    txt = { type: "TXT", name: "srv1._mass._tcp.local", value: ["server_id=srv1", "name=Kitchen", "base_url=http://192.0.2.20:8095"] }
+    tst.eq(mdns.massServers([{ from: "192.0.2.20:5353", records: [ptr, srv, bridge, txt] }]), [{ id: "srv1", name: "Kitchen", server: "http://192.0.2.20:8095" }], "base_url over a bridge A record")
+    tst.eq(mdns.massServers([{ from: "192.0.2.20:5353", records: [ptr, srv, bridge] }]), [{ id: "srv1._mass._tcp.local", name: "srv1", server: "http://198.51.100.2:8095" }], "no TXT: SRV target's A record, instance label")
+    tst.eq(mdns.massServers([{ from: "192.0.2.20:5353", records: [ptr, srv] }])[0].server, "http://192.0.2.20:8095", "no A: the replying host")
+    tst.eq(mdns.massServers([{ from: "192.0.2.20:5353", records: [ptr] }]), [], "PTR alone has no address")
+    ' Two replies for one server, and a second server; sorted by name.
+    ptr2 = { type: "PTR", name: "_mass._tcp.local", value: "srv2._mass._tcp.local" }
+    txt2 = { type: "TXT", name: "srv2._mass._tcp.local", value: ["server_id=srv2", "name=attic", "base_url=http://192.0.2.30:8095"] }
+    both = mdns.massServers([{ from: "192.0.2.20", records: [ptr, txt] }, { from: "192.0.2.30", records: [ptr2, txt2] }, { from: "192.0.2.20", records: [ptr, txt] }])
+    tst.eq(both.Count(), 2, "one entry per server")
+    tst.eq(both[0].name, "attic", "sorted by name, ignoring case")
+    tst.eq(mdns.massServers(invalid), [], "no replies")
+    other = { type: "PTR", name: "_other._tcp.local", value: "t1._other._tcp.local" }
+    otherTxt = { type: "TXT", name: "t1._other._tcp.local", value: ["base_url=http://192.0.2.40:8095"] }
+    tst.eq(mdns.massServers([{ from: "192.0.2.40", records: [other, otherTxt] }]), [], "other services ignored")
+end sub

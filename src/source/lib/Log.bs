@@ -1,0 +1,194 @@
+import "pkg:/source/lib/Util.bs"
+
+' Structured logging for every thread.
+'
+' Each entry is printed to the BrightScript console (telnet port 8085) and,
+' when a LogTask is registered on m.global (debug builds only), handed to it
+' for the in-memory ring buffer, the pull endpoint, and the optional push
+' collector.
+'
+' Log state changes, events, and decisions; never stream data, tokens, or
+' credentials. Data passed in is redacted (see log.redact).
+namespace log
+
+    const LEVEL_OFF = 0
+    const LEVEL_ERROR = 1
+    const LEVEL_WARN = 2
+    const LEVEL_INFO = 3
+    const LEVEL_DEBUG = 4
+    const LEVEL_TRACE = 5
+
+    sub error(cat as string, msg as string, data = invalid as dynamic)
+        log.write(log.LEVEL_ERROR, cat, msg, data)
+    end sub
+
+    sub warn(cat as string, msg as string, data = invalid as dynamic)
+        log.write(log.LEVEL_WARN, cat, msg, data)
+    end sub
+
+    sub info(cat as string, msg as string, data = invalid as dynamic)
+        log.write(log.LEVEL_INFO, cat, msg, data)
+    end sub
+
+    sub debug(cat as string, msg as string, data = invalid as dynamic)
+        log.write(log.LEVEL_DEBUG, cat, msg, data)
+    end sub
+
+    sub trace(cat as string, msg as string, data = invalid as dynamic)
+        log.write(log.LEVEL_TRACE, cat, msg, data)
+    end sub
+
+    function enabled(lvl as integer) as boolean
+        return lvl <= log.currentLevel()
+    end function
+
+    function currentLevel() as integer
+        g = log.globalNode()
+        if g <> invalid
+            lvl = g.logLevel
+            if lvl <> invalid then return lvl
+        end if
+        return log.LEVEL_INFO
+    end function
+
+    function levelName(lvl as integer) as string
+        names = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]
+        if lvl >= 0 and lvl < names.Count() then return names[lvl]
+        return "?"
+    end function
+
+    function levelFromName(name as dynamic, fallback = 3 as integer) as integer
+        if not util.isNonEmptyString(name) then return fallback
+        names = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"]
+        u = UCase(name)
+        for i = 0 to names.Count() - 1
+            if names[i] = u then return i
+        end for
+        return fallback
+    end function
+
+    sub write(lvl as integer, cat as string, msg as string, data as dynamic)
+        if lvl > log.currentLevel() then return
+        entry = log.makeEntry(lvl, cat, msg, data)
+        print log.formatLine(entry)
+        g = log.globalNode()
+        if g <> invalid
+            sink = g.logTask
+            if sink <> invalid then sink.entry = entry
+        end if
+    end sub
+
+    function makeEntry(lvl as integer, cat as string, msg as string, data as dynamic) as object
+        entry = {
+            t: util.nowMs()
+            l: log.levelName(lvl)
+            c: cat
+            m: msg
+            th: log.threadTag()
+        }
+        if data <> invalid then entry.d = log.redact(data, 0)
+        return entry
+    end function
+
+    function formatLine(entry as object) as string
+        line = "[masstv " + log.clockString(entry.t) + " " + entry.l + " " + entry.c + "@" + entry.th + "] " + entry.m
+        if entry.d <> invalid
+            line = line + " " + FormatJson(entry.d)
+        end if
+        return line
+    end function
+
+    ' "HH:MM:SS.mmm" (UTC) from epoch milliseconds.
+    function clockString(ms as dynamic) as string
+        total& = ms
+        secs& = total& \ 1000
+        milli = total& - secs& * 1000
+        dayS = secs& mod 86400
+        h = dayS \ 3600
+        mi = (dayS mod 3600) \ 60
+        s = dayS mod 60
+        mstr = milli.ToStr()
+        while Len(mstr) < 3
+            mstr = "0" + mstr
+        end while
+        return util.pad2(h) + ":" + util.pad2(mi) + ":" + util.pad2(s) + "." + mstr
+    end function
+
+    function threadTag() as string
+        if m.logTag <> invalid then return m.logTag
+        if m.top <> invalid
+            tag = m.top.subtype()
+            if tag <> invalid then return tag
+        end if
+        return "main"
+    end function
+
+    ' Keys whose values must never reach a log. Substring matches catch
+    ' variants like access_token, masstv_token, and user_password.
+    function isSecretKey(key as string) as boolean
+        k = LCase(key)
+        for each s in ["token", "password", "authorization", "jwt", "secret", "credential"]
+            if Instr(1, k, s) > 0 then return true
+        end for
+        return k = "code" or k = "arl" or util.endsWith(k, "_code") or util.endsWith(k, "_arl")
+    end function
+
+    ' Deep-copies data, replacing secret values and truncating long strings.
+    function redact(data as dynamic, depth as integer) as dynamic
+        if depth > 6 then return "<deep>"
+        if util.isAA(data)
+            out = {}
+            for each k in data
+                if log.isSecretKey(k)
+                    out[k] = "<redacted>"
+                else
+                    out[k] = log.redact(data[k], depth + 1)
+                end if
+            end for
+            return out
+        end if
+        if util.isArray(data)
+            out = []
+            n = data.Count()
+            limit = n
+            if limit > 20 then limit = 20
+            for i = 0 to limit - 1
+                out.Push(log.redact(data[i], depth + 1))
+            end for
+            if n > limit then out.Push("<+" + (n - limit).ToStr() + " more>")
+            return out
+        end if
+        if util.isString(data)
+            if Len(data) > 300 then return Left(data, 300) + "<+" + (Len(data) - 300).ToStr() + " chars>"
+            return data
+        end if
+        t = type(data)
+        if t = "roSGNode" then return "<node " + data.subtype() + ">"
+        if util.isNumber(data) or t = "Boolean" or t = "roBoolean" or t = "Invalid" or t = "roInvalid" then return data
+        return "<" + t + ">"
+    end function
+
+    ' Removes secret query parameters from a URL before logging it.
+    function redactUrl(url as dynamic) as string
+        if not util.isNonEmptyString(url) then return ""
+        q = Instr(1, url, "?")
+        if q = 0 then return url
+        base = Left(url, q)
+        parts = []
+        for each part in Mid(url, q + 1).Split("&")
+            eq = Instr(1, part, "=")
+            if eq > 0 and log.isSecretKey(util.urlDecode(Left(part, eq - 1)))
+                parts.Push(Left(part, eq) + "<redacted>")
+            else
+                parts.Push(part)
+            end if
+        end for
+        return base + parts.Join("&")
+    end function
+
+    function globalNode() as dynamic
+        if type(m.global) = "roSGNode" then return m.global
+        return invalid
+    end function
+
+end namespace

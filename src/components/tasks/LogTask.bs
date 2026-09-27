@@ -1,0 +1,169 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/HttpMini.bs"
+import "pkg:/source/lib/SocketServer.bs"
+
+' This task must never call log.*: those calls feed `entry`, which is what
+' this task consumes. It uses print for its own diagnostics.
+
+sub init()
+    m.top.functionName = "runLog"
+end sub
+
+sub runLog()
+    m.logTag = "log"
+    port = CreateObject("roMessagePort")
+    m.port = port
+    m.top.ObserveField("entry", port)
+    m.top.ObserveField("config", port)
+    m.ring = []
+    m.ringSize = 2000
+    m.seq = 0
+    m.pushBuf = []
+    m.push = invalid
+    m.collector = ""
+    m.srv = invalid
+    m.dropped = 0
+    applyConfig(m.top.config, port)
+    clock = CreateObject("roTimespan")
+    lastPush = 0
+    while true
+        ' Short: in the brs-cli simulator socket events don't wake Wait, so
+        ' each request (accept, then read) waited out two timeouts, about a
+        ' second per /state or /log call. This task exists only in debug
+        ' builds.
+        msg = Wait(50, port)
+        mt = type(msg)
+        if mt = "roSGNodeEvent"
+            f = msg.GetField()
+            if f = "entry"
+                addEntry(msg.GetData())
+            else if f = "config"
+                applyConfig(msg.GetData(), port)
+            end if
+        else if mt = "roSocketEvent"
+            sockserver.handle(m.srv, msg, routeRequest)
+        else if mt = "roUrlEvent"
+            if m.push <> invalid and msg.GetSourceIdentity() = m.push.GetIdentity()
+                if msg.GetResponseCode() <> 200 then m.dropped = m.dropped + 1
+                m.push = invalid
+            end if
+        end if
+        now = clock.TotalMilliseconds()
+        if m.collector <> "" and m.push = invalid and m.pushBuf.Count() > 0 and (now - lastPush > 1000 or m.pushBuf.Count() >= 100)
+            flushPush()
+            lastPush = now
+        end if
+    end while
+end sub
+
+sub applyConfig(cfg as dynamic, port as object)
+    if not util.isAA(cfg) then return
+    if util.isNumber(cfg.ringSize) and cfg.ringSize > 0 then m.ringSize = cfg.ringSize
+    if cfg.DoesExist("collector")
+        m.collector = util.str(cfg.collector, "")
+        print "[masstv log] push collector: "; m.collector
+    end if
+    if util.isNumber(cfg.pullPort) and cfg.pullPort > 0 and m.srv = invalid
+        m.srv = sockserver.open(cfg.pullPort, port)
+        if m.srv <> invalid then print "[masstv log] pull endpoint on port "; cfg.pullPort
+    end if
+end sub
+
+sub addEntry(e as dynamic)
+    if not util.isAA(e) then return
+    m.seq = m.seq + 1
+    e.s = m.seq
+    m.ring.Push(e)
+    if m.ring.Count() > m.ringSize then m.ring.Shift()
+    if m.collector <> ""
+        m.pushBuf.Push(e)
+        if m.pushBuf.Count() > 1000
+            m.pushBuf.Shift()
+            m.dropped = m.dropped + 1
+        end if
+    end if
+end sub
+
+sub flushPush()
+    lines = []
+    for each e in m.pushBuf
+        lines.Push(FormatJson(e))
+    end for
+    m.pushBuf = []
+    xfer = CreateObject("roUrlTransfer")
+    target = m.collector
+    if Instr(1, target, "://") = 0 then target = "http://" + target
+    xfer.SetUrl(target + "/log")
+    xfer.SetPort(m.port)
+    xfer.AddHeader("Content-Type", "application/x-ndjson")
+    dev = m.global.device
+    xfer.AddHeader("X-MassTV-Device", util.str(util.get(dev, "name"), "roku"))
+    if xfer.AsyncPostFromString(lines.Join(Chr(10)) + Chr(10))
+        m.push = xfer
+    else
+        m.dropped = m.dropped + 1
+    end if
+end sub
+
+function routeRequest(req as object) as string
+    if req.method <> "GET" then return httpmini.response(405, "text/plain", "GET only")
+    if req.path = "/log" then return serveLog(req.query)
+    ' Just the newest entry's seq: cheap (no m.global reads, which cross
+    ' to the render thread), for tools waiting on "the app logged
+    ' something".
+    if req.path = "/seq" then return httpmini.response(200, "text/plain", m.seq.ToStr() + Chr(10))
+    if req.path = "/state" then return httpmini.response(200, "application/json", FormatJson(stateSnapshot()))
+    if req.path = "/level"
+        name = util.str(req.query.set, "")
+        if name <> ""
+            m.global.logLevel = log.levelFromName(name, m.global.logLevel)
+        end if
+        return httpmini.response(200, "text/plain", "level=" + log.levelName(m.global.logLevel) + Chr(10))
+    end if
+    if req.path = "/" then return serveHtml()
+    return httpmini.response(404, "text/plain", "not found")
+end function
+
+function serveLog(q as object) as string
+    since = util.toInt(q.since, 0)
+    limit = util.toInt(q.limit, 5000)
+    lines = []
+    for each e in m.ring
+        if e.s > since and lines.Count() < limit then lines.Push(FormatJson(e))
+    end for
+    body = lines.Join(Chr(10))
+    if body <> "" then body = body + Chr(10)
+    return httpmini.response(200, "application/x-ndjson", body, { "X-MassTV-Seq": m.seq.ToStr(), "X-MassTV-Dropped": m.dropped.ToStr() })
+end function
+
+function stateSnapshot() as object
+    session = util.copyAA(m.global.session)
+    if session.DoesExist("token") then session.token = "<redacted>"
+    return {
+        seq: m.seq
+        level: log.levelName(m.global.logLevel)
+        screen: m.global.currentScreen
+        device: m.global.device
+        session: session
+        nowPlaying: m.global.nowPlaying
+        queueState: m.global.queueState
+        clockOffset: m.global.clockOffset
+    }
+end function
+
+function serveHtml() as string
+    rows = []
+    start = m.ring.Count() - 200
+    if start < 0 then start = 0
+    for i = m.ring.Count() - 1 to start step -1
+        e = m.ring[i]
+        d = ""
+        if e.d <> invalid then d = FormatJson(e.d)
+        rows.Push("<tr class='" + LCase(e.l) + "'><td>" + e.s.ToStr() + "</td><td>" + log.clockString(e.t) + "</td><td>" + e.l + "</td><td>" + util.htmlEscape(e.c + "@" + e.th) + "</td><td>" + util.htmlEscape(e.m) + "</td><td><code>" + util.htmlEscape(d) + "</code></td></tr>")
+    end for
+    css = "<style>body{font:13px monospace;background:#111;color:#ddd}td{padding:2px 6px;vertical-align:top}.warn{color:#fc6}.error{color:#f66}.debug{color:#8ab}.trace{color:#777}</style>"
+    html = "<!doctype html><html><head><meta charset='utf-8'><meta http-equiv='refresh' content='3'><title>Mass TV log</title>" + css + "</head><body>"
+    html = html + "<p>Mass TV debug log, newest first. seq=" + m.seq.ToStr() + " level=" + log.levelName(m.global.logLevel) + "</p><table>" + rows.Join("") + "</table></body></html>"
+    return httpmini.response(200, "text/html; charset=utf-8", html)
+end function

@@ -1,0 +1,51 @@
+sub init()
+    m.box = m.top.findNode("box")
+    m.placeholder = m.top.findNode("placeholder")
+    m.cover = m.top.findNode("cover")
+    m.cover.ObserveField("loadStatus", "onStatus")
+end sub
+
+sub onUri()
+    uri = m.top.uri
+    ' Reused list rows get a new uri as they scroll; set it only when it
+    ' changes, so an unchanged cover isn't reloaded.
+    if m.cover.uri <> uri then m.cover.uri = uri
+    showPlaceholder(uri = "")
+end sub
+
+' A cover that fails to load gets the placeholder too.
+sub onStatus()
+    if m.cover.loadStatus = "failed" and m.cover.uri <> "" then showPlaceholder(true)
+end sub
+
+sub showPlaceholder(show as boolean)
+    m.placeholder.visible = show
+    m.top.placeholderShown = show
+end sub
+
+sub onPlaceholderUri()
+    m.placeholder.uri = m.top.placeholderUri
+end sub
+
+sub onSize()
+    w = m.top.width
+    h = m.top.height
+    if h <= 0 then h = w
+    for each node in [m.box, m.placeholder, m.cover]
+        node.width = w
+        node.height = h
+    end for
+    ' The placeholder decodes like the cover, so a small loadSize (the
+    ' blurred backdrop) blurs it the same way.
+    if m.top.loadSize > 0
+        for each node in [m.placeholder, m.cover]
+            node.loadWidth = m.top.loadSize
+            node.loadHeight = m.top.loadSize
+        end for
+    end if
+end sub
+
+sub onBoxColor()
+    m.box.color = m.top.boxColor
+    m.box.visible = m.top.boxColor <> ""
+end sub

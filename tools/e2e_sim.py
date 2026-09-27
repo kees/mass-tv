@@ -1,0 +1,749 @@
+#!/usr/bin/env python3
+"""End-to-end test of the Mass TV debug build in the brs-cli simulator,
+against tools/fake_ma.py. No Roku or Music Assistant needed.
+
+Checks: profile injection and bootstrap, token renewal, player id discovery, playback
+driven by MA-style ECP deep links, pause via keypress, next track, remote
+navigation, the debug log endpoints, and that no token reaches the logs.
+
+Usage: python3 tools/e2e_sim.py [--zip out/masstv-debug.zip] [--keep]
+"""
+
+import argparse
+import base64
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BRS = os.path.join(ROOT, "node_modules", ".bin", "brs-cli")
+# Not 8095: a real MA server may be running on this host.
+FAKE_PORT = 18095
+# The fake answers the server screen's mDNS queries here (unicast on
+# loopback), so the test needs no network and sees no real servers.
+FAKE_MDNS_PORT = 18353
+# A second fake Music Assistant, for a profile on another server (its
+# test user has the same user ID as the first's).
+FAKE2_PORT = 18096
+LOG_URL = "http://127.0.0.1:8889"
+ECP_URL = "http://127.0.0.1:8060"
+
+results = []
+
+# Timing, reported with each check (the time since the previous check and
+# where it went): key presses (count, total, slowest), and requests to the
+# app's /state and /log endpoints (count, total).
+T = {"last": time.time(), "start": time.time()}
+STATS = {}
+
+
+def stat(kind, secs):
+    s = STATS.setdefault(kind, [0, 0.0, 0.0])
+    s[0] += 1
+    s[1] += secs
+    s[2] = max(s[2], secs)
+
+
+def timing():
+    now = time.time()
+    parts = ["+%.1f s" % (now - T["last"])]
+    for kind in ["key", "seq", "state", "log"] + sorted(k for k in STATS if k.startswith("key ")):
+        n, total, worst = STATS.get(kind, [0, 0.0, 0.0])
+        if n:
+            parts.append("%s %d: %.1f s (max %.2f)" % (kind, n, total, worst))
+    T["last"] = now
+    STATS.clear()
+    return "[" + ", ".join(parts) + "]"
+
+
+# Each check must come within this many seconds of the previous one; a
+# stuck step (a wait that never ends, the simulator's ECP hanging) then
+# fails fast with a report instead of stalling the run.
+CHECK_BUDGET = 45
+
+
+class Stalled(Exception):
+    pass
+
+
+def on_alarm(signum, frame):
+    raise Stalled("no check completed within %d s" % CHECK_BUDGET)
+
+
+def check(name, ok, detail=""):
+    results.append((name, ok, detail))
+    print(("PASS " if ok else "FAIL ") + name + ("" if ok else "  -- " + detail) + "  " + timing(), flush=True)
+    signal.alarm(CHECK_BUDGET)
+
+
+def http(url, data=None, method=None, timeout=5, headers=None):
+    req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode()
+    finally:
+        if url.startswith(LOG_URL + "/state"):
+            stat("state", time.time() - t0)
+        elif url.startswith(LOG_URL + "/log"):
+            stat("log", time.time() - t0)
+        elif url.startswith(LOG_URL + "/seq"):
+            stat("seq", time.time() - t0)
+
+
+def lower_keys(v):
+    # Associative arrays stored in node fields come back with lowercased
+    # keys (Roku behavior, mirrored by the simulator).
+    if isinstance(v, dict):
+        return {k.lower(): lower_keys(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [lower_keys(x) for x in v]
+    return v
+
+
+def state():
+    try:
+        return lower_keys(json.loads(http(LOG_URL + "/state")))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def seq():
+    """The app's newest log entry number (the cheap /seq endpoint; /state
+    reads the app's global fields, a round trip to its render thread)."""
+    try:
+        return int(http(LOG_URL + "/seq").strip())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def wait_for(pred, timeout=30, interval=0.1):
+    end = time.time() + timeout
+    last = {}
+    while time.time() < end:
+        last = state()
+        if last and pred(last):
+            return last
+        time.sleep(interval)
+    return last
+
+
+def wait_for_fake(pred, timeout=5, interval=0.2):
+    """Polls the fake MA's state until pred(queue) holds; returns the state."""
+    end = time.time() + timeout
+    fs = {}
+    while time.time() < end:
+        fs = json.loads(http("http://127.0.0.1:%d/_fake/state" % FAKE_PORT))
+        if pred(fs["queue"]):
+            return fs
+        time.sleep(interval)
+    return fs
+
+
+def wait_for_log(pred, since, timeout=5, interval=0.1):
+    """Polls the app's log for an entry after seq `since` matching pred."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            for line in http(LOG_URL + "/log?since=%d" % since).splitlines():
+                if pred(line):
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(interval)
+    return False
+
+
+def find_log(pred, since, timeout=5, interval=0.1):
+    """Like wait_for_log, but returns the first matching entry (parsed)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            for line in http(LOG_URL + "/log?since=%d" % since).splitlines():
+                if pred(line):
+                    return json.loads(line)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(interval)
+    return None
+
+
+def said(*parts, since, timeout=5):
+    """True once the app logged a screen-reader line (speech.say) holding
+    every part: what Audio Guide would say for Mass TV's own widgets."""
+    def pred(line):
+        return '"c":"speech"' in line and all(p in line for p in parts)
+    return wait_for_log(pred, since, timeout=timeout)
+
+
+# The nav bar's entries, left to right (MainScene's m.nav.entries).
+NAV = ["home", "library", "browse", "search", "nowplaying", "queue", "settings"]
+
+
+def nav_to(entry, select=True):
+    """Up to the nav bar, then Left/Right from wherever Up aimed (the entry
+    above the cursor) to `entry`, and OK (unless select is False). Returns
+    the entry Up aimed at."""
+    # Up first moves within a list until its top row; then the bar takes it.
+    aimed = None
+    for _ in range(12):
+        since = seq()
+        key("Up")
+        aimed = find_log(lambda l: '"c":"nav"' in l and '"m":"aim up"' in l, since, timeout=1)
+        if aimed:
+            break
+    got = (aimed or {}).get("d", {}).get("entry", "")
+    if got not in NAV:
+        return got
+    steps = NAV.index(entry) - NAV.index(got)
+    for _ in range(abs(steps)):
+        key("Right" if steps > 0 else "Left")
+    if select:
+        key("Select")
+    return got
+
+
+def on_screen(st, name):
+    return st.get("screen") == name, "screen=%r" % st.get("screen")
+
+
+def ecp_input(query):
+    """Sends deep-link parameters to the running app (ECP /input)."""
+    http(ECP_URL + "/input?" + query, data=b"", method="POST")
+
+
+MIN_KEY_GAP = 0.35
+LAST_KEY = [0.0]
+
+
+def key(k, timeout=2):
+    """Presses a remote key, then waits until the app logs something (every
+    key it handles logs at DEBUG) instead of pausing a fixed time."""
+    # brs-cli dropped a key press that came about 0.3 s after the previous
+    # one (once /seq made the waits short): keep a gap.
+    gap = LAST_KEY[0] + MIN_KEY_GAP - time.time()
+    if gap > 0:
+        time.sleep(gap)
+    t0 = time.time()
+    before = seq()
+    # brs-cli's ECP server sometimes stops answering for a while: a short
+    # timeout and one retry instead of a long wait.
+    for attempt in range(2):
+        try:
+            http(ECP_URL + "/keypress/" + k, data=b"", method="POST", timeout=2)
+            break
+        except Exception:  # noqa: BLE001
+            stat("key ecp retry " + k, time.time() - t0)
+    LAST_KEY[0] = time.time()
+    end = time.time() + timeout
+    while time.time() < end:
+        # Gentle polling: hammering the simulator's sockets starved its
+        # ECP server (keys got lost).
+        time.sleep(0.15)
+        if seq() > before:
+            stat("key", time.time() - t0)
+            return
+    # Nothing logged: the whole timeout was spent waiting.
+    stat("key", time.time() - t0)
+    stat("key timeout " + k, timeout)
+
+
+def primary_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--zip", default=os.path.join(ROOT, "out", "masstv-debug.zip"))
+    ap.add_argument("--keep", action="store_true", help="leave processes running at the end")
+    a = ap.parse_args()
+    a.zip = os.path.abspath(a.zip)
+    os.makedirs(os.path.join(ROOT, "logs"), exist_ok=True)
+    fake_log = open(os.path.join(ROOT, "logs", "e2e-fake-ma.log"), "w")
+    sim_log = open(os.path.join(ROOT, "logs", "e2e-sim.log"), "w")
+
+    fake = subprocess.Popen([sys.executable, "-u", os.path.join(ROOT, "tools", "fake_ma.py"), "--roku", "127.0.0.1",
+                             "--port", str(FAKE_PORT), "--host", "127.0.0.1", "--mdns-port", str(FAKE_MDNS_PORT),
+                             "--mdns-count", "6"],
+                            stdout=fake_log, stderr=subprocess.STDOUT)
+    fake2_log = open(os.path.join(ROOT, "logs", "e2e-fake-ma2.log"), "w")
+    fake2 = subprocess.Popen([sys.executable, "-u", os.path.join(ROOT, "tools", "fake_ma.py"), "--roku", "127.0.0.1",
+                              "--port", str(FAKE2_PORT), "--host", "127.0.0.1"],
+                             stdout=fake2_log, stderr=subprocess.STDOUT)
+    sim = None
+    signal.signal(signal.SIGALRM, on_alarm)
+    signal.alarm(CHECK_BUDGET + 30)  # the first check also waits for boot
+    try:
+        for _ in range(40):
+            try:
+                http("http://127.0.0.1:%d/info" % FAKE_PORT)
+                break
+            except Exception:  # noqa: BLE001
+                time.sleep(0.25)
+        # The test's own API calls use a separate token: the app renews and
+        # revokes the one it is given, which expires within the renewal window.
+        token = http("http://127.0.0.1:%d/_fake/token?user=testuser" % FAKE_PORT)
+        near_expiry = http("http://127.0.0.1:%d/_fake/token?user=testuser&days=30" % FAKE_PORT)
+        # The fake reports the Roku player at the simulator's own address.
+        link = "masstv_server=127.0.0.1:%d,masstv_token=%s,masstv_log=DEBUG,masstv_mdns_to=127.0.0.1:%d" % (
+            FAKE_PORT, near_expiry, FAKE_MDNS_PORT)
+        sim = subprocess.Popen([BRS, "--ecp", "-k", link, a.zip], stdout=sim_log, stderr=subprocess.STDOUT,
+                               cwd=os.path.dirname(a.zip))
+
+        st = wait_for(lambda s: s.get("screen") == "home", timeout=40)
+        check("boots to home with injected profile", st.get("screen") == "home", "screen=%r" % st.get("screen"))
+        st = wait_for(lambda s: s.get("session", {}).get("schema") == 77, timeout=15)
+        check("session has server and user", st.get("session", {}).get("server") == "http://127.0.0.1:%d" % FAKE_PORT
+              and st.get("session", {}).get("displayname") == "Test User", json.dumps(st.get("session")))
+        check("state endpoint redacts the token", st.get("session", {}).get("token") == "<redacted>")
+        check("server schema read from /info", st.get("session", {}).get("schema") == 77, str(st.get("session")))
+        check("the screen reader names Home's first row and where it landed",
+              said("Recently played, ", " of ", since=0, timeout=10),
+              "no speech of the first row's name and item")
+        old_id = json.loads(base64.urlsafe_b64decode(near_expiry.split(".")[1] + "==="))["jti"]
+        end = time.time() + 10
+        revoked = []
+        while time.time() < end and old_id not in revoked:
+            revoked = json.loads(http("http://127.0.0.1:%d/_fake/state" % FAKE_PORT)).get("revoked", [])
+            time.sleep(0.5)
+        check("near-expiry token renewed and the old one revoked", old_id in revoked, json.dumps(revoked))
+
+        http("http://127.0.0.1:%d/_fake/play?uri=%s" % (FAKE_PORT, urllib.parse.quote("example_music--fake01://album/al1")),
+             data=b"", method="POST")
+        st = wait_for(lambda s: s.get("nowplaying", {}).get("title") == "One More Time", timeout=15)
+        np = st.get("nowplaying", {})
+        check("MA deep link starts playback", np.get("title") == "One More Time" and np.get("status") in ("loading", "playing"),
+              json.dumps(np))
+        # The fake enqueues the next item a moment after the play; wait for
+        # it rather than sampling the instant the title appears.
+        st = wait_for(lambda s: s.get("nowplaying", {}).get("hasnext") is True, timeout=10)
+        np = st.get("nowplaying", {})
+        check("enqueued next item held", np.get("hasnext") is True, json.dumps(np))
+        st = wait_for(lambda s: s.get("session", {}).get("playerid") == "ROKU_FAKE0001", timeout=10)
+        check("player id learned", st.get("session", {}).get("playerid") == "ROKU_FAKE0001", json.dumps(st.get("session")))
+
+        # brs-cli's Video node never reports playing or paused, so the
+        # status can't change here. Check what we control: the Play key
+        # reaches the player as a toggle. How node states drive the status
+        # (pause, resume) is unit-tested in PlaybackTests.
+        since = seq()
+        key("Play")
+        found = wait_for_log(lambda line: '"m":"command toggle"' in line, since)
+        check("Play key reaches the player as a toggle", found, "no 'command toggle' log entry after the key")
+
+        http("http://127.0.0.1:%d/api" % FAKE_PORT, data=json.dumps({"command": "player_queues/next", "args": {"queue_id": "ROKU_FAKE0001"}}).encode(),
+             method="POST", headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        st = wait_for(lambda s: s.get("nowplaying", {}).get("title") == "Aerodynamic", timeout=10)
+        check("next track via MA", st.get("nowplaying", {}).get("title") == "Aerodynamic", json.dumps(st.get("nowplaying")))
+
+        nav_to("library")
+        st = wait_for(lambda s: s.get("screen") == "library", timeout=8)
+        check("remote navigation to Library", st.get("screen") == "library", "screen=%r" % st.get("screen"))
+        # Library opens on its tab row with the cursor on the shown tab: OK
+        # there reloads the tab (a new page request).
+        wait_for_log(lambda l: '"c":"library"' in l and '"m":"page"' in l, 0, timeout=8)
+        since = seq()
+        key("Select")
+        check("OK on the shown Library tab reloads it",
+              wait_for_log(lambda l: '"m":"tab ok"' in l and '"reload":true' in l, since)
+              and wait_for_log(lambda l: '"c":"library"' in l and '"m":"page"' in l, since),
+              "no 'tab ok' reload and new page after OK")
+        # An album with a description: More offers "View description",
+        # which opens the text panel; the fake's first album (Discovery)
+        # has a long text, so the panel scrolls; Back closes it.
+        since = seq()
+        key("Right")
+        key("Select")
+        wait_for_log(lambda l: '"m":"page"' in l and '"tab":"albums"' in l, since, timeout=8)
+        since = seq()
+        key("Down")
+        check("Down from the Albums tab focuses Discovery",
+              wait_for_log(lambda l: '"focus album"' in l and '"Discovery"' in l, since),
+              "no album focus on Discovery")
+        check("the screen reader says the album, its second line, then its place",
+              said('"text":"Discovery, Daft Punk, 2001, button 1 of ', since=since),
+              "no speech of Discovery's title, artist and year, and place")
+        since = seq()
+        key("Select")
+        st = wait_for(lambda s: s.get("screen") == "detail", timeout=8)
+        check("OK on an album opens its Detail page", *on_screen(st, "detail"))
+        check("the screen reader names the album before its first button",
+              said("Discovery, album", "Play, button 1 of 5", since=since),
+              "no speech of the album and Play")
+        since = seq()
+        for _ in range(4):
+            key("Right")
+        wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"More"' in l, since)
+        since = seq()
+        key("Select")
+        key("Up")  # the menu wraps to its last item
+        check("the album's More menu ends with View description",
+              wait_for_log(lambda l: '"c":"menu"' in l and '"label":"View description"' in l, since),
+              "no menu focus on View description")
+        check("the screen reader says the menu's title, then its rows",
+              said("Discovery, menu, Play next, button 1 of 4", since=since)
+              and said("View description, button 4 of 4", since=since),
+              "no speech of the menu title and rows")
+        since = seq()
+        key("Select")
+        check("View description opens the text panel, scrollable for a long text",
+              wait_for_log(lambda l: '"c":"textpanel"' in l and '"m":"layout"' in l and '"scrolls":true' in l, since),
+              "no scrollable text panel layout")
+        since = seq()
+        key("Down")
+        check("Down scrolls the text panel",
+              wait_for_log(lambda l: '"c":"textpanel"' in l and '"m":"scroll"' in l and '"moved":true' in l, since),
+              "no text panel scroll")
+        since = seq()
+        key("Back")
+        check("Back closes the text panel and refocuses More",
+              wait_for_log(lambda l: '"m":"menu closed"' in l, since)
+              and wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"More"' in l, since),
+              "no 'menu closed' and More focus after Back")
+        key("Back")
+        wait_for(lambda s: s.get("screen") == "library", timeout=8)
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "home", timeout=8)
+        check("Back returns home", st.get("screen") == "home", "screen=%r" % st.get("screen"))
+
+        # Now Playing via the nav bar.
+        since = seq()
+        nav_to("nowplaying")
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=8)
+        check("nav bar reaches Now Playing", st.get("screen") == "nowplaying", "screen=%r" % st.get("screen"))
+        check("the screen reader says nav bar entries with their place",
+              said("Now Playing, 5 of 7", since=since),
+              "no speech of the nav bar's entries")
+        # Lists use rewind/fast-forward to page (Roku convention); on Now
+        # Playing a tap seeks: expect a server seek (the fake re-sends the item).
+        key("Fwd")
+        fs = wait_for_fake(lambda q: q["elapsed_time"] >= 9)
+        check("fast-forward tap on Now Playing sends a seek", fs["queue"]["elapsed_time"] >= 9, json.dumps(fs["queue"]["elapsed_time"]))
+        # Instant replay rewinds 10 s (Roku certification 4.9), also a
+        # server seek.
+        key("InstantReplay")
+        before = fs["queue"]["elapsed_time"]
+        fs2 = wait_for_fake(lambda q: q["elapsed_time"] < before)
+        check("instant replay seeks back", fs2["queue"]["elapsed_time"] < before,
+              "%r -> %r" % (before, fs2["queue"]["elapsed_time"]))
+
+        # Now Playing's More (its last button): the playing track's options,
+        # ending with View album, which opens the album's Detail page; Back
+        # returns to Now Playing.
+        since = seq()
+        for _ in range(5):
+            key("Right")
+        check("Now Playing's last button is More",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"More"' in l, since),
+              "no button focus on More")
+        since = seq()
+        key("Select")
+        key("Up")  # the menu wraps to its last item
+        check("More on Now Playing ends with View album",
+              wait_for_log(lambda l: '"c":"menu"' in l and '"label":"View album"' in l, since),
+              "no menu focus on View album")
+        key("Select")
+        st = wait_for(lambda s: s.get("screen") == "detail", timeout=8)
+        check("View album opens the playing track's album", *on_screen(st, "detail"))
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=8)
+        check("Back from that album returns to Now Playing", *on_screen(st, "nowplaying"))
+
+        # Queue (the nav bar entry after Now Playing): OK on a row opens its
+        # options in Mass TV's own menu (not a Roku dialog); Back closes it
+        # and the list has focus again. Up from More (Now Playing's last
+        # button, at the right) aims at the entry above it: the profile.
+        aimed = nav_to("queue")
+        check("Up from Now Playing's More aims at the profile entry above it", aimed == "settings",
+              "aimed at %r" % aimed)
+        st = wait_for(lambda s: s.get("screen") == "queue", timeout=8)
+        check("the nav bar's Queue opens the queue", *on_screen(st, "queue"))
+        wait_for_log(lambda l: '"c":"queue"' in l and '"m":"focus track"' in l, 0, timeout=8)
+        since = seq()
+        key("Select")
+        check("OK on a queue row opens its options menu",
+              wait_for_log(lambda l: '"c":"menu"' in l and '"label":"Play now"' in l, since),
+              "no OptionsMenu focus on Play now")
+        since = seq()
+        key("Back")
+        check("Back closes the menu and refocuses the queue",
+              wait_for_log(lambda l: '"m":"menu closed"' in l, since)
+              and wait_for_log(lambda l: '"c":"queue"' in l and '"m":"focus track"' in l, since),
+              "no 'menu closed' and queue focus after Back")
+        # Queue is a root screen (Back would ask to exit): back to Now
+        # Playing through the nav bar. Up from a full-width queue row aims
+        # at the current screen's entry.
+        aimed = nav_to("nowplaying")
+        check("Up from a full-width row aims at the current screen's entry", aimed == "queue",
+              "aimed at %r" % aimed)
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=8)
+        check("the nav bar returns from the queue to Now Playing", *on_screen(st, "nowplaying"))
+        # Down from the nav bar aims too: from the profile entry (right end)
+        # onto Now Playing's buttons lands on More, the button below it.
+        nav_to("settings", select=False)
+        # The nav bar wraps: Right from the profile name is Home, Left
+        # from Home is the profile name again.
+        since = seq()
+        key("Right")
+        check("Right from the profile name wraps to Home",
+              wait_for_log(lambda l: '"c":"nav"' in l and '"m":"focus"' in l and '"entry":"home"' in l, since),
+              "no nav focus on home")
+        since = seq()
+        key("Left")
+        check("Left from Home wraps to the profile name",
+              wait_for_log(lambda l: '"c":"nav"' in l and '"m":"focus"' in l and '"entry":"settings"' in l, since),
+              "no nav focus on settings")
+        since = seq()
+        key("Down")
+        check("Down from the profile entry lands on More below it",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"More"' in l, since),
+              "no button focus on More")
+
+        def ma_play():
+            http("http://127.0.0.1:%d/_fake/play?uri=%s" % (FAKE_PORT, urllib.parse.quote("example_music--fake01://album/al1")),
+                 data=b"", method="POST")
+
+        def ma_next():
+            http("http://127.0.0.1:%d/api" % FAKE_PORT, data=json.dumps({"command": "player_queues/next", "args": {"queue_id": "ROKU_FAKE0001"}}).encode(),
+                 method="POST", headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+
+        def ma_stop():
+            ecp_input("u=%20&t=a")  # how MA's Roku provider stops playback
+            wait_for(lambda s: s.get("nowplaying", {}).get("status") == "stopped", timeout=8)
+
+        def screen_after(name, settle=1.0):
+            """Waits for screen `name`, then lets a wrong flip show up."""
+            wait_for(lambda s: s.get("screen") == name, timeout=8)
+            time.sleep(settle)
+            return state()
+
+        def on(st, name):
+            return st.get("screen") == name, "screen=%r np=%s" % (st.get("screen"), json.dumps(st.get("nowplaying")))
+
+        # "Who's listening?" (via Settings > Switch profile, still signed
+        # in) with music playing: arriving doesn't flip, a new track from MA
+        # brings up Now Playing on top, Back dismisses it through track
+        # changes until playback stops, and MA's stop returns to the picker.
+        # Settings is the nav bar's last entry, shown as the profile name.
+        nav_to("settings")
+        st = wait_for(lambda s: s.get("screen") == "settings", timeout=8)
+        check("the profile name opens Settings", *on(st, "settings"))
+        key("Select")  # "Switch profile", the first entry
+        st = screen_after("profiles")
+        check("the picker opens, and music already playing doesn't flip it", *on(st, "profiles"))
+        ma_next()
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=10)
+        check("a new track on the picker shows Now Playing", *on(st, "nowplaying"))
+        key("Back")
+        wait_for(lambda s: s.get("screen") == "profiles", timeout=8)
+        ma_next()
+        st = screen_after("profiles", settle=2.0)
+        check("after Back, a track change doesn't flip again", *on(st, "profiles"))
+        ma_stop()
+        ma_play()
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=10)
+        check("new playback after a stop flips again", *on(st, "nowplaying"))
+        ma_stop()
+        st = wait_for(lambda s: s.get("screen") == "profiles", timeout=8)
+        check("stop returns to the picker", *on(st, "profiles"))
+        # The picker's rows wrap: Up from the profile to "+ Link a profile",
+        # Down back to the profile (which the next step picks).
+        since = seq()
+        key("Up")
+        check("Up from the picker's first row wraps to its last",
+              wait_for_log(lambda l: '"c":"profiles"' in l and "+ Link a profile" in l, since),
+              "no picker focus on + Link a profile")
+        since = seq()
+        key("Down")
+        check("Down from the picker's last row wraps to its first",
+              wait_for_log(lambda l: '"c":"profiles"' in l and '"index":0' in l, since),
+              "no picker focus on row 0")
+
+        # A profile from a second server, whose user has the same user ID as
+        # the first's: the two stay separate profiles, each on its own
+        # server, and the picker names the servers. Unlinking it leaves the
+        # first, back on the picker.
+        token2 = http("http://127.0.0.1:%d/_fake/token?user=testuser" % FAKE2_PORT)
+        server2 = "http://127.0.0.1:%d" % FAKE2_PORT
+        ecp_input("masstv_server=127.0.0.1%%3A%d&masstv_token=%s" % (FAKE2_PORT, token2))
+        st = wait_for(lambda s: s.get("session", {}).get("server") == server2 and s.get("screen") == "home", timeout=10)
+        check("a profile linked from a second server uses that server",
+              st.get("session", {}).get("server") == server2, json.dumps(st.get("session")))
+        nav_to("settings")
+        wait_for(lambda s: s.get("screen") == "settings", timeout=8)
+        since = seq()
+        key("Select")  # "Switch profile"
+        wait_for(lambda s: s.get("screen") == "profiles", timeout=8)
+        check("the picker names each profile's server when they differ",
+              wait_for_log(lambda l: '"c":"profiles"' in l and "Test User  \\u00B7  127.0.0.1:%d" % FAKE2_PORT in l, since),
+              "no picker row naming the second server")
+        key("Select")  # the last used profile: the second server's
+        st = wait_for(lambda s: s.get("session", {}).get("server") == server2 and s.get("screen") == "home", timeout=8)
+        nav_to("settings")
+        wait_for(lambda s: s.get("screen") == "settings", timeout=8)
+        key("Down")
+        key("Down")
+        key("Select")  # "Unlink this profile"
+        since = seq()
+        key("Select")  # "Yes"
+        st = wait_for(lambda s: s.get("screen") == "profiles", timeout=8)
+        check("unlinking one server's profile keeps the other's",
+              st.get("screen") == "profiles"
+              and wait_for_log(lambda l: '"c":"profiles"' in l and '"title":"Test User"' in l, since),
+              "screen=%r" % st.get("screen"))
+
+        # Removing the only profile signs out (its token is revoked) and
+        # opens the sign-in screen: pick the profile, then Settings >
+        # Remove this profile > Yes.
+        key("Select")
+        wait_for(lambda s: s.get("screen") == "home", timeout=8)
+        nav_to("settings")
+        wait_for(lambda s: s.get("screen") == "settings", timeout=8)
+        key("Down")
+        key("Down")
+        key("Select")  # "Remove this profile"
+        key("Select")  # "Yes"
+        st = wait_for(lambda s: s.get("screen") == "setup", timeout=8)
+        check("removing the only profile signs out to sign-in", st.get("screen") == "setup" and not st.get("session"),
+              "screen=%r session=%s" % (st.get("screen"), json.dumps(st.get("session"))))
+
+        # Signed out: the same on the sign-in screen.
+        ma_play()
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=10)
+        check("signed-out playback shows Now Playing", st.get("screen") == "nowplaying"
+              and st.get("nowplaying", {}).get("title") == "One More Time", on(st, "nowplaying")[1])
+        key("Back")
+        st = screen_after("setup")
+        check("Back returns to sign-in and stays while the music plays", st.get("screen") == "setup"
+              and st.get("nowplaying", {}).get("status") == "loading", on(st, "setup")[1])
+        ma_stop()
+        st = screen_after("setup")
+        check("signed-out stop leaves sign-in up", *on(st, "setup"))
+        # The server screen starts on Link (the last server is kept) and
+        # lists what the fake announces over mDNS: itself and five made-up
+        # servers, more than the list's four visible rows. Down to its Now
+        # Playing button, which opens the unlinked Now Playing; that stays
+        # up with nothing playing, and Back returns.
+        check("the server screen lists the six servers found over mDNS",
+              wait_for_log(lambda l: '"m":"servers found"' in l and '"count":6' in l and "Fake MA (test)" in l,
+                           0, timeout=8),
+              "no 'servers found' log entry with the fake's six servers")
+
+        def focus_logged(what, since):
+            if what in ("Now Playing", "Link"):
+                return wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"%s"' % what in l, since)
+            field = "server" if what.startswith("Fake MA") else "label"
+            return wait_for_log(lambda l: '"c":"setup"' in l and '"m":"focus"' in l
+                                and '"%s":"%s"' % (field, what) in l, since)
+
+        def step(k, what, desc):
+            since = seq()
+            key(k)
+            check(desc, focus_logged(what, since), "no focus on %s" % what)
+
+        step("Down", "Now Playing", "Down from Link goes to the Now Playing button")
+        key("Select")
+        st = screen_after("nowplaying")
+        check("setup's Now Playing button opens Now Playing, which stays with nothing playing", *on(st, "nowplaying"))
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "setup", timeout=8)
+        check("Back from it returns to setup", *on(st, "setup"))
+        # Up and Down wrap through the list, the address row, and Now
+        # Playing.
+        step("Down", "Fake MA (test)", "Down from Now Playing wraps to the server list")
+        step("Up", "Now Playing", "Up from the list's top wraps to Now Playing")
+        step("Up", "address", "Up from Now Playing goes to the address")
+        step("Up", "Fake MA 6", "Up from the address goes to the list's last server")
+        # The list scrolls within its rows, up to the first server.
+        for n in (5, 4, 3, 2):
+            step("Up", "Fake MA %d" % n, "Up in the list reaches Fake MA %d" % n)
+        step("Up", "Fake MA (test)", "Up in the list scrolls back to the first server")
+        # Choosing a server fills the address and moves on to Link, which
+        # checks the server and opens the link screen for it; Back returns.
+        since = seq()
+        key("Select")
+        check("choosing a server moves the cursor to Link",
+              wait_for_log(lambda l: '"m":"server chosen"' in l and "127.0.0.1:%d" % FAKE_PORT in l, since)
+              and focus_logged("Link", since), "no 'server chosen' and Link focus")
+        key("Select")
+        st = wait_for(lambda s: s.get("screen") == "link", timeout=8)
+        check("Link opens the link screen", *on(st, "link"))
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "setup", timeout=8)
+        check("Back from the link screen returns to the server screen", *on(st, "setup"))
+
+        # A fresh, unlinked start (a reset, like a new install) opens Now
+        # Playing, with the link screen beneath it.
+        ecp_input("masstv_reset=1")
+        st = screen_after("nowplaying")
+        check("an unlinked start opens Now Playing", *on(st, "nowplaying"))
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "setup", timeout=8)
+        check("Back from the unlinked start goes to the link screen", *on(st, "setup"))
+
+        logs = http(LOG_URL + "/log?since=0")
+        check("log endpoint returns entries", logs.count("\n") > 20, "lines=%d" % logs.count("\n"))
+        check("AppLaunchComplete beacon sent", '"m":"launch complete"' in logs)
+        check("no token in logs", token not in logs and token.split(".")[1] not in logs)
+        bad = [l for l in logs.splitlines() if '"l":"ERROR"' in l]
+        check("no ERROR log entries", not bad, "\n".join(bad[:5]))
+        signal.alarm(0)
+    except Stalled as err:
+        # Where it stuck: the screen and the app's last log lines.
+        signal.alarm(0)
+        where = "screen=%r" % state().get("screen")
+        try:
+            tail = [l for l in http(LOG_URL + "/log?since=0", timeout=3).splitlines() if '"c":"fade"' not in l][-8:]
+        except Exception:  # noqa: BLE001
+            tail = ["(app log unreachable)"]
+        check("run finished without stalling", False, "%s; %s; last app log:\n    %s" % (err, where, "\n    ".join(tail)))
+    finally:
+        # Save the app's log even when a check above threw.
+        try:
+            with open(os.path.join(ROOT, "logs", "e2e-app.log"), "w") as f:
+                f.write(http(LOG_URL + "/log?since=0"))
+        except Exception:  # noqa: BLE001
+            pass
+        if not a.keep:
+            if sim:
+                sim.terminate()
+            fake.terminate()
+            fake2.terminate()
+        fake_log.close()
+        fake2_log.close()
+        sim_log.close()
+    failed = [r for r in results if not r[1]]
+    if not failed:
+        print("e2e: PASS, all %d checks passed" % len(results))
+        sys.exit(0)
+    kept = os.path.join(ROOT, "logs", "e2e-fail-" + time.strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(kept, exist_ok=True)
+    for name in ("e2e-app.log", "e2e-sim.log", "e2e-fake-ma.log"):
+        src = os.path.join(ROOT, "logs", name)
+        if os.path.exists(src):
+            shutil.copy(src, kept)
+    print("=" * 60)
+    print("e2e: FAILED, %d of %d checks failed:" % (len(failed), len(results)))
+    for name, _, detail in failed:
+        print("  FAIL %s  -- %s" % (name, detail))
+    print("logs of this run kept in %s" % os.path.relpath(kept, ROOT))
+    print("=" * 60)
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

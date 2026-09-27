@@ -1,0 +1,172 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Jwt.bs"
+
+' Profile list model. A profile is one MA user on one MA server, with a
+' long-lived token:
+'   { server, server_name, user_id, username, display_name, avatar_url,
+'     token, exp }
+' server is the server's URL; server_name is its name when linking knew
+' it (from discovery), else "". A user_id is unique only within its
+' server, so a profile is identified by both (profiles.key).
+' Storage is in lib/Store.bs; these functions are pure.
+namespace profiles
+
+    ' MA's long-lived tokens last a year and MA never extends them, so Mass
+    ' TV replaces each one with a fresh token this many days before expiry.
+    const RENEW_WITHIN_DAYS = 60
+
+    ' The name MA shows for this TV's tokens (Settings > Users > tokens).
+    function tokenName(deviceName as dynamic) as string
+        return "Mass TV (" + util.str(deviceName, "Roku") + ")"
+    end function
+
+    ' Whether a profile's token should be replaced now: a login token kept
+    ' as a fallback (it can't outlive 90 days), or a long-lived one close to
+    ' expiry. An expired or unreadable token can't be renewed.
+    function renewalDue(profile as dynamic, nowSec as dynamic) as boolean
+        token = util.get(profile, "token")
+        days = jwt.daysLeft(token, nowSec)
+        if days = invalid or days < 0 then return false
+        if not jwt.isLongLived(token) then return true
+        return days <= profiles.RENEW_WITHIN_DAYS
+    end function
+
+    ' A profile's identity: its server and user ID.
+    function key(profile as dynamic) as string
+        return util.str(util.get(profile, "server"), "") + "#" + util.str(util.get(profile, "user_id"), "")
+    end function
+
+    function isSame(p as dynamic, serverUrl as string, userId as string) as boolean
+        return util.str(util.get(p, "server"), "") = serverUrl and util.str(util.get(p, "user_id"), "") = userId
+    end function
+
+    ' Profiles saved before each had its own server all belonged to the
+    ' TV's one server: gives those `legacyServer`. Returns the list, and
+    ' whether anything changed (to save it once).
+    function withServers(list as dynamic, legacyServer as string) as object
+        out = []
+        changed = false
+        if util.isArray(list)
+            for each p in list
+                if util.isAA(p) and util.str(util.get(p, "server"), "") = "" and legacyServer <> ""
+                    q = util.copyAA(p)
+                    q.server = legacyServer
+                    out.Push(q)
+                    changed = true
+                else
+                    out.Push(p)
+                end if
+            end for
+        end if
+        return { list: out, changed: changed }
+    end function
+
+    ' Where a profile's server is, for people: its name from discovery,
+    ' else its address without "http://".
+    function serverLabel(profile as dynamic) as string
+        name = util.str(util.get(profile, "server_name"), "")
+        if name <> "" then return name
+        return util.str(util.get(profile, "server"), "").Replace("http://", "").Replace("https://", "")
+    end function
+
+    ' Whether the profiles span more than one server.
+    function manyServers(list as dynamic) as boolean
+        if not util.isArray(list) or list.Count() = 0 then return false
+        first = util.str(util.get(list[0], "server"), "")
+        for each p in list
+            if util.str(util.get(p, "server"), "") <> first then return true
+        end for
+        return false
+    end function
+
+    ' Puts a renewed token into the list, only if that profile still holds
+    ' the token that was renewed (it may have been removed or re-added
+    ' meanwhile). Returns the new list, or invalid if nothing matched.
+    function replaceToken(list as dynamic, serverUrl as string, userId as string, oldToken as string, newToken as string) as dynamic
+        if not util.isArray(list) then return invalid
+        out = []
+        replaced = false
+        for each p in list
+            if profiles.isSame(p, serverUrl, userId) and util.str(util.get(p, "token"), "") = oldToken
+                q = util.copyAA(p)
+                q.token = newToken
+                q.exp = jwt.expiry(newToken)
+                out.Push(q)
+                replaced = true
+            else
+                out.Push(p)
+            end if
+        end for
+        if not replaced then return invalid
+        return out
+    end function
+
+    function upsert(list as dynamic, profile as object) as object
+        out = []
+        replaced = false
+        k = profiles.key(profile)
+        if util.isArray(list)
+            for each p in list
+                if profiles.key(p) = k
+                    out.Push(profile)
+                    replaced = true
+                else
+                    out.Push(p)
+                end if
+            end for
+        end if
+        if not replaced then out.Push(profile)
+        return out
+    end function
+
+    function remove(list as dynamic, serverUrl as string, userId as string) as object
+        out = []
+        if util.isArray(list)
+            for each p in list
+                if not profiles.isSame(p, serverUrl, userId) then out.Push(p)
+            end for
+        end if
+        return out
+    end function
+
+    function find(list as dynamic, serverUrl as string, userId as dynamic) as dynamic
+        if not util.isArray(list) or not util.isNonEmptyString(userId) then return invalid
+        for each p in list
+            if profiles.isSame(p, serverUrl, userId) then return p
+        end for
+        return invalid
+    end function
+
+    function displayName(profile as dynamic) as string
+        name = util.str(util.get(profile, "display_name"), "")
+        if name <> "" then return name
+        return util.str(util.get(profile, "username"), "?")
+    end function
+
+    ' Builds a profile from auth/me (or a login user), a token, and the
+    ' server they came from (and its name from discovery, if known).
+    function fromUser(user as object, token as string, serverUrl as string, serverName = "" as string) as object
+        return {
+            server: serverUrl
+            server_name: serverName
+            user_id: util.str(util.get(user, "user_id"), "")
+            username: util.str(util.get(user, "username"), "")
+            display_name: util.str(util.get(user, "display_name"), "")
+            avatar_url: util.str(util.get(user, "avatar_url"), "")
+            token: token
+            exp: jwt.expiry(token)
+        }
+    end function
+
+    ' Which profile to preselect: last used if still present, else first.
+    ' lastKey is a profiles.key, or a bare user ID saved before profiles
+    ' had their own servers.
+    function initialIndex(list as dynamic, lastKey as dynamic) as integer
+        if not util.isArray(list) or list.Count() = 0 then return -1
+        for i = 0 to list.Count() - 1
+            if profiles.key(list[i]) = lastKey or list[i].user_id = lastKey then return i
+        end for
+        return 0
+    end function
+
+end namespace

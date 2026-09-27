@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- RowList / MarkupGrid item: square art with two lines of text.
+     Content nodes carry title, description (second line), HDPosterUrl, and
+     an `item` assocarray with the MA media item. -->
+<component name="PosterCard" extends="Group">
+    <interface>
+        <field id="itemContent" type="node" onChange="onContent" />
+        <field id="width" type="float" onChange="onSize" />
+        <field id="height" type="float" onChange="onSize" />
+        <field id="focusPercent" type="float" onChange="onFocus" />
+        <field id="rowFocusPercent" type="float" onChange="onFocus" />
+        <field id="itemHasFocus" type="boolean" onChange="onFocus" />
+        <field id="gridHasFocus" type="boolean" onChange="onFocus" />
+        <field id="rowListHasFocus" type="boolean" onChange="onFocus" />
+    </interface>
+    <children>
+        <!-- For a missing or failed cover (CoverArt): a dim Mass TV emblem,
+             under the item's initials (up to two letters) when it has any. -->
+        <CoverArt id="art" width="240" loadSize="256" boxColor="#232A33" />
+        <Label id="initial" width="240" height="240" horizAlign="center" vertAlign="center" color="#5A6270" font="font:LargeBoldSystemFont" />
+        <!-- Focus frame: a 4 px border around the whole card, cover and
+             caption, drawn inside the card's slot. Grids and row lists clip
+             to their bounds, so a frame outside the card lost its top and
+             left edges on the first row and column. -->
+        <Group id="frame" opacity="0">
+            <Rectangle id="frameTop" color="#5A8DEE" width="240" height="4" />
+            <Rectangle id="frameBottom" color="#5A8DEE" width="240" height="4" translation="[0,316]" />
+            <Rectangle id="frameLeft" color="#5A8DEE" width="4" height="320" />
+            <Rectangle id="frameRight" color="#5A8DEE" width="4" height="320" translation="[236,0]" />
+        </Group>
+        <!-- Inset from the card's edges, clear of the frame. -->
+        <Label id="title" translation="[12,252]" width="216" height="32" color="#EEEEF6" font="font:SmallBoldSystemFont" wrap="false" />
+        <Label id="subtitle" translation="[12,284]" width="216" height="28" color="#9A9FB0" font="font:SmallestSystemFont" wrap="false" />
+    </children>
+</component>

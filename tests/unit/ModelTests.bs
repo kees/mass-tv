@@ -1,0 +1,307 @@
+sub maApiTests()
+    tst.begin("ma")
+    body = ParseJson(ma.requestBody("7", "players/all", invalid))
+    tst.eq(body.message_id, "7", "body id")
+    tst.eq(body.command, "players/all", "body command")
+    tst.eq(body.args, {}, "body default args")
+    tst.eq(ma.classifyStatus(200), "ok", "200")
+    tst.eq(ma.classifyStatus(401), "auth", "401")
+    tst.eq(ma.classifyStatus(403), "forbidden", "403")
+    tst.eq(ma.classifyStatus(503), "setup", "503")
+    tst.eq(ma.classifyStatus(500), "server", "500")
+    tst.eq(ma.classifyStatus(-28), "timeout", "timeout")
+    tst.eq(ma.classifyStatus(-7), "network", "network")
+    tst.eq(ma.errorMessage("network", "player_queues/next", ""), "", "network errors not toasted per action")
+    tst.eq(ma.errorMessage("timeout", "player_queues/next", ""), "", "timeouts not toasted per action")
+    tst.eq(ma.errorMessage("server", "player_queues/next", "Internal server error"), "Music Assistant couldn't skip ahead.", "500 names the action")
+    tst.eq(ma.errorMessage("badrequest", "player_queues/seek", "Can not seek items without duration."), "Music Assistant couldn't seek. (Can not seek items without duration.)", "400 includes MA's reason")
+    tst.eq(ma.errorMessage("forbidden", "music/favorites/add_item", ""), "Your profile isn't allowed to add that to favorites.", "forbidden")
+    tst.eq(ma.errorMessage("setup", "x", ""), "Music Assistant is still starting up. Try again in a moment.", "503")
+    tst.eq(ma.errorMessage("server", "unknown/cmd", ""), "Music Assistant couldn't do that.", "unknown command")
+
+    album = { media_type: "album", item_id: "302127", provider: "example_music--AbC", name: "Discovery", year: 2001, artists: [{ name: "Daft Punk" }] }
+    tst.eq(ma.uriOf(album), "example_music--AbC://album/302127", "built uri")
+    tst.eq(ma.uriOf({ uri: "library://track/4" }), "library://track/4", "given uri")
+    tst.eq(ma.subtitleOf(album), "Daft Punk · 2001", "album subtitle")
+    track = { media_type: "track", name: "One More Time", version: "Radio Edit", artists: [{ name: "Daft Punk" }], album: { name: "Discovery" } }
+    tst.eq(ma.titleOf(track), "One More Time (Radio Edit)", "track title with version")
+    tst.eq(ma.subtitleOf(track), "Daft Punk · Discovery", "track subtitle")
+    lf = Chr(10)
+    bio = "**Test Band** formed in 1999." + lf + lf + "See [their site](https://example.com/band) &amp; <b>more</b>." + Chr(13) + lf + "# Early years" + lf + "They toured."
+    tst.eq(ma.descriptionOf({ metadata: { description: bio } }), "Test Band formed in 1999. See their site & more. Early years They toured.", "description as plain text")
+    tst.eq(ma.descriptionOf({ media_type: "artist", name: "No Bio" }), "", "no description")
+    tst.eq(ma.descriptionOf({ media_type: "album", metadata: { review: "A review.", description: "About." } }), "A review.", "album review first")
+    tst.eq(ma.descriptionOf({ media_type: "album", metadata: { description: "About." } }), "About.", "album description")
+    tst.eq(ma.descriptionOf({ media_type: "artist", metadata: { review: "A review." } }), "", "only albums use review")
+    tst.eq(ma.plainText("It&#39;s &quot;fine&quot; &lt;3"), "It's " + Chr(34) + "fine" + Chr(34) + " <3", "entities decoded")
+    tst.ok(ma.isPlayable(album), "album playable")
+    tst.ok(not ma.isPlayable({ media_type: "folder" }), "folder not playable")
+    tst.ok(not ma.isPlayable({ media_type: "playlist", is_playable: false }), "explicitly unplayable")
+
+    args = ma.playMediaArgs("ROKU_1", "library://album/42", "replace", "", false, 77)
+    tst.eq(args, { queue_id: "ROKU_1", media: "library://album/42", option: "replace" }, "play args")
+    args = ma.playMediaArgs("ROKU_1", "x://playlist/1", "", "x://track/9", true, 77)
+    tst.eq(args.shuffle, true, "shuffle arg")
+    tst.eq(args.option, "replace", "shuffle implies replace")
+    tst.eq(args.start_item, "x://track/9", "start item")
+    args = ma.playMediaArgs("ROKU_1", "x://playlist/1", "", "", true, 40)
+    tst.eq(args.shuffle, invalid, "shuffle gated by schema")
+    tst.eq(args.sort_by, invalid, "no sort_by by default")
+    args = ma.playMediaArgs("ROKU_1", "x://playlist/1", "replace", "x://track/9", false, 65, ma.SORT_NEWEST)
+    tst.eq(args.sort_by, "timestamp_added_desc", "sort_by passed")
+
+    ' Playlist "newest first": stable, so a batch added together keeps its
+    ' playlist order; undated tracks go last.
+    pl = [
+        { name: "a", date_added: "2020-01-15T10:00:00+00:00" }
+        { name: "b", date_added: "2020-01-15T10:00:00+00:00" }
+        { name: "early", date_added: "2020-01-15T08:00:00+00:00" }
+        { name: "c", date_added: "2020-01-15T10:00:00+00:00" }
+        { name: "undated" }
+        { name: "new1", date_added: "2020-03-01T12:00:00+00:00" }
+        { name: "new2", date_added: "2020-06-01T09:30:00+00:00" }
+    ]
+    names = []
+    for each t in ma.sortNewestFirst(pl)
+        names.Push(t.name)
+    end for
+    tst.eq(names, ["new2", "new1", "a", "b", "c", "early", "undated"], "newest first order")
+    tst.eq(pl[0].name, "a", "input left unsorted")
+    tst.eq(ma.sortNewestFirst([]), [], "empty list")
+    tst.ok(ma.hasDateAdded(pl), "has date_added")
+    tst.ok(not ma.hasDateAdded([{ name: "x" }, { name: "y", date_added: invalid }]), "no date_added")
+    tst.ok(not ma.hasDateAdded(invalid), "invalid list")
+    tst.eq(ma.radioUri(track), "", "radio needs uri")
+    tst.eq(ma.radioUri(album), "radio_playlist://playlist/example_music--AbC://album/302127", "radio uri")
+    tst.eq(ma.flowUri("example_music--AbC"), "example_music--AbC://playlist/flow", "flow uri")
+    tst.eq(ma.browseArgs("example_music--AbC://", "ROKU_1", 77), { path: "example_music--AbC://", player_id: "ROKU_1" }, "browse args")
+    tst.eq(ma.browseArgs(invalid, "ROKU_1", 50), {}, "browse root old schema")
+
+    q = { state: "playing", elapsed_time: 10, elapsed_time_last_updated: 1000.0, playback_speed: 1 }
+    tst.eq(ma.elapsedOf(q, 1005.5), 15.5, "elapsed interpolated")
+    q.state = "paused"
+    tst.eq(ma.elapsedOf(q, 1005.5), 10, "elapsed paused")
+    tst.eq(ma.elapsedOf(invalid, 1), 0, "elapsed invalid")
+
+    tst.eq(ma.queueIdForPlayer({ player_id: "P", active_source: "LEADER" }), "LEADER", "queue via active source")
+    tst.eq(ma.queueIdForPlayer({ player_id: "P" }), "P", "queue is player")
+
+    players = [
+        { player_id: "sonos1", provider: "sonos", name: "Kitchen" }
+        { player_id: "ROKU_A", provider: "roku_media_assistant", name: "Bedroom Roku", device_info: { identifiers: { ip_address: "192.168.1.30" } } }
+        { player_id: "ROKU_B", provider: "roku_media_assistant", name: "Living Room", device_info: { identifiers: { ip_address: "192.168.1.31" } } }
+    ]
+    tst.eq(ma.findRokuPlayer(players, ["192.168.1.31"], "x").player_id, "ROKU_B", "find by ip")
+    tst.eq(ma.findRokuPlayer(players, ["192.0.2.1"], "Bedroom Roku").player_id, "ROKU_A", "find by name")
+    tst.eq(ma.findRokuPlayer(players, ["192.0.2.1"], "nope"), invalid, "not found")
+    ' Listed under another provider, with the Roku provider as an output
+    ' protocol, and its address in device_info itself.
+    merged = [{ player_id: "up_1", provider: "universal_player", name: "TV", device_info: { ip_address: "192.0.2.40" }, output_protocols: [{ protocol_domain: "roku_media_assistant" }] }]
+    tst.eq(ma.findRokuPlayer(merged, ["192.0.2.40"], "x").player_id, "up_1", "find via output protocol and device_info address")
+    tst.eq(ma.findRokuPlayer([{ player_id: "s", provider: "sonos", device_info: { ip_address: "192.0.2.40" } }], ["192.0.2.40"], "x"), invalid, "an address match that isn't a Roku player")
+    tst.eq(ma.hasPlayer(players, "ROKU_B"), true, "player listed")
+    tst.eq(ma.hasPlayer(players, "ROKU_Z"), false, "player not listed")
+    tst.eq(ma.playerSummary(players)[1], { id: "ROKU_A", provider: "roku_media_assistant", name: "Bedroom Roku", ip: "192.168.1.30", roku: true }, "summary for the log")
+end sub
+
+sub imagesTests()
+    tst.begin("images")
+    tst.eq(images.snapSize(100), 160, "snap up")
+    tst.eq(images.snapSize(256), 256, "snap exact")
+    tst.eq(images.snapSize(5000), 1024, "snap max")
+    img = { type: "thumb", path: "https://e-cdns-images.dzcdn.net/images/cover/abc/500x500.jpg", proxy_id: "ff00", remotely_accessible: true }
+    tst.eq(images.proxyUrl("http://ma:8095", img, 200), "http://ma:8095/imageproxy/ff00?size=256&fmt=jpg", "proxy url")
+    tst.eq(images.proxyUrl("", img, 200), img.path, "remote fallback")
+    placeholder = { path: "https://e-cdns-images.dzcdn.net/images/artist/d41d8cd98f00b204e9800998ecf8427e/500x500.jpg", proxy_id: "aa" }
+    tst.eq(images.proxyUrl("http://ma:8095", placeholder, 256), "", "placeholder skipped")
+    maLogo = { path: "https://raw.githubusercontent.com/music-assistant/server/refs/heads/stable/music_assistant/logo.png", remotely_accessible: true }
+    tst.eq(images.usable(maLogo), false, "MA logo is not a cover")
+    tst.eq(images.proxyUrl("http://ma:8095", maLogo, 256), "", "MA logo skipped")
+    tst.eq(images.isStandIn("http://192.0.2.10:8095/imageproxy/abc?size=512"), false, "real cover")
+    tst.eq(images.isStandIn(""), false, "empty is no stand-in")
+    builtinLogo = { type: "thumb", path: "logo.png", provider: "builtin", remotely_accessible: false, proxy_id: "55fa" }
+    tst.eq(images.usable(builtinLogo), false, "MA's built-in logo is not a cover")
+    tst.eq(images.proxyUrl("http://ma:8095", builtinLogo, 256), "", "built-in logo skipped")
+    tst.eq(images.pick({ media_type: "playlist", metadata: { images: [builtinLogo] } }), invalid, "built-in playlist has no cover")
+    track = {
+        media_type: "track"
+        album: { media_type: "album", image: { path: "album.jpg", proxy_id: "alb" } }
+        metadata: { images: [{ type: "thumb", path: "track.jpg", proxy_id: "trk" }] }
+    }
+    tst.eq(images.pick(track).proxy_id, "alb", "track prefers album art")
+    item = { media_type: "playlist", metadata: { images: [{ type: "fanart", path: "f.jpg" }, { type: "thumb", path: "t.jpg" }] } }
+    tst.eq(images.pick(item).path, "t.jpg", "wanted type preferred")
+    tst.eq(images.pick(item, "landscape").path, "f.jpg", "fallback to first usable")
+    tst.eq(images.pick({ media_type: "artist" }), invalid, "no image")
+    tst.eq(images.initials("Josh Woodward"), "JW", "initials of two words")
+    tst.eq(images.initials("Recently played tracks"), "RP", "initials of the first two words")
+    tst.eq(images.initials("Tryad"), "TR", "one word: its first two letters")
+    tst.eq(images.initials("J.S. Bach"), "JB", "punctuation skipped")
+    tst.eq(images.initials("500 Random tracks"), "5R", "digits count")
+    tst.eq(images.initials("Infinite Mix (favorites)"), "IM", "parenthesized third word ignored")
+    tst.eq(images.initials("éclair noir"), "ÉN", "non-ASCII letters")
+    tst.eq(images.initials("A"), "A", "one letter")
+    tst.eq(images.initials(""), "", "empty title")
+    tst.eq(images.initials(invalid), "", "no title")
+end sub
+
+sub jwtTests()
+    tst.begin("jwt")
+    ' {"sub":"u1","exp":1790000000,"username":"testuser"}
+    token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImV4cCI6MTc5MDAwMDAwMCwidXNlcm5hbWUiOiJ0ZXN0dXNlciJ9.sig"
+    tst.eq(jwt.expiry(token), 1790000000, "exp")
+    tst.eq(jwt.claims(token).username, "testuser", "claims")
+    tst.eq(jwt.daysLeft(token, 1790000000 - 86400 * 10), 10, "days left")
+    tst.eq(jwt.expiry("garbage"), invalid, "bad token")
+    tst.eq(jwt.expiry(invalid), invalid, "invalid token")
+    ' {"sub":"u1","jti":"tid1","exp":1790000000,"is_long_lived":true}
+    long = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImp0aSI6InRpZDEiLCJleHAiOjE3OTAwMDAwMDAsImlzX2xvbmdfbGl2ZWQiOnRydWV9.sig"
+    ' Same, with "is_long_lived":false and "jti":"tid2"
+    short = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImp0aSI6InRpZDIiLCJleHAiOjE3OTAwMDAwMDAsImlzX2xvbmdfbGl2ZWQiOmZhbHNlfQ.sig"
+    tst.eq(jwt.tokenId(long), "tid1", "token id")
+    tst.eq(jwt.tokenId(token), "", "no jti")
+    tst.eq(jwt.tokenId("garbage"), "", "bad token id")
+    tst.eq(jwt.isLongLived(long), true, "long-lived")
+    tst.eq(jwt.isLongLived(short), false, "login token")
+    tst.eq(jwt.isLongLived(token), false, "no claim")
+    tst.eq(jwt.isLongLived(invalid), false, "invalid not long-lived")
+end sub
+
+sub profilesTests()
+    tst.begin("profiles")
+    s1 = "http://192.0.2.10:8095"
+    s2 = "http://192.0.2.20:8095"
+    a = { server: s1, user_id: "a", username: "alice", display_name: "Alice", token: "t1" }
+    b = { server: s1, user_id: "b", username: "bob", display_name: "", token: "t2" }
+    list = profiles.upsert([], a)
+    list = profiles.upsert(list, b)
+    tst.eq(list.Count(), 2, "two profiles")
+    a2 = util.copyAA(a)
+    a2.token = "t3"
+    list = profiles.upsert(list, a2)
+    tst.eq(list.Count(), 2, "upsert replaces")
+    tst.eq(profiles.find(list, s1, "a").token, "t3", "updated token")
+    tst.eq(profiles.displayName(b), "bob", "display falls back to username")
+    tst.eq(profiles.initialIndex(list, profiles.key(b)), 1, "last used preselected")
+    tst.eq(profiles.initialIndex(list, "b"), 1, "a bare user ID saved earlier still preselects")
+    tst.eq(profiles.initialIndex(list, "zzz"), 0, "fallback first")
+    tst.eq(profiles.initialIndex([], "a"), -1, "empty")
+    tst.eq(profiles.manyServers(list), false, "one server")
+
+    ' The same user ID on another server is another profile.
+    other = { server: s2, user_id: "a", username: "alice", display_name: "Alice", token: "t9", server_name: "Music Assistant (den)" }
+    list = profiles.upsert(list, other)
+    tst.eq(list.Count(), 3, "same user on a second server added")
+    tst.eq(profiles.find(list, s2, "a").token, "t9", "found by server and user")
+    tst.eq(profiles.find(list, s1, "a").token, "t3", "first server's profile kept")
+    tst.eq(profiles.manyServers(list), true, "two servers")
+    tst.eq(profiles.serverLabel(other), "Music Assistant (den)", "server label: the discovered name")
+    tst.eq(profiles.serverLabel(a), "192.0.2.10:8095", "server label: the address")
+    list = profiles.remove(list, s1, "a")
+    tst.eq(list.Count(), 2, "removed")
+    tst.eq(profiles.find(list, s1, "a"), invalid, "gone")
+    tst.eq(profiles.find(list, s2, "a").token, "t9", "the other server's profile stays")
+
+    ' Profiles saved before each had a server get the TV's one server.
+    old = [{ user_id: "u1", token: "x" }, { server: s2, user_id: "u2", token: "y" }]
+    m1 = profiles.withServers(old, s1)
+    tst.eq(m1.changed, true, "migration changed something")
+    tst.eq(m1.list[0].server, s1, "legacy profile got the TV's server")
+    tst.eq(m1.list[1].server, s2, "a profile with a server keeps it")
+    tst.eq(old[0].server, invalid, "input not modified")
+    tst.eq(profiles.withServers(m1.list, s1).changed, false, "migrates once")
+    tst.eq(profiles.withServers(old, "").changed, false, "no TV server: nothing to give")
+    p = profiles.fromUser({ user_id: "u3", username: "carol" }, "t", s2, "Den")
+    tst.eq([p.server, p.server_name, p.user_id], [s2, "Den", "u3"], "fromUser keeps the server")
+
+    ' Token renewal. Both tokens expire at 1790000000.
+    long = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImp0aSI6InRpZDEiLCJleHAiOjE3OTAwMDAwMDAsImlzX2xvbmdfbGl2ZWQiOnRydWV9.sig"
+    short = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImp0aSI6InRpZDIiLCJleHAiOjE3OTAwMDAwMDAsImlzX2xvbmdfbGl2ZWQiOmZhbHNlfQ.sig"
+    ' {"sub":"u1","jti":"tid3","exp":1800000000,"is_long_lived":true}
+    fresh = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1MSIsImp0aSI6InRpZDMiLCJleHAiOjE4MDAwMDAwMDAsImlzX2xvbmdfbGl2ZWQiOnRydWV9.sig"
+    day = 86400
+    tst.eq(profiles.renewalDue({ token: long }, 1790000000 - 200 * day), false, "long-lived, far from expiry")
+    tst.eq(profiles.renewalDue({ token: long }, 1790000000 - 60 * day), true, "long-lived, within window")
+    tst.eq(profiles.renewalDue({ token: long }, 1790000000 - 5 * day), true, "long-lived, nearly expired")
+    tst.eq(profiles.renewalDue({ token: long }, 1790000000 + day), false, "expired can't renew")
+    tst.eq(profiles.renewalDue({ token: short }, 1790000000 - 80 * day), true, "login token always renewed")
+    tst.eq(profiles.renewalDue({ token: "garbage" }, 1790000000), false, "unreadable token")
+    tst.eq(profiles.renewalDue({}, 1790000000), false, "no token")
+    tst.eq(profiles.tokenName("Living Room"), "Mass TV (Living Room)", "token name")
+    tst.eq(profiles.tokenName(invalid), "Mass TV (Roku)", "token name fallback")
+
+    list = [{ server: s1, user_id: "u1", username: "testuser", token: long }, { server: s1, user_id: "u2", token: "other" }]
+    out = profiles.replaceToken(list, s1, "u1", long, fresh)
+    tst.eq(out.Count(), 2, "replace keeps others")
+    tst.eq(out[0].token, fresh, "token replaced")
+    tst.eq(out[0].exp, 1800000000, "expiry updated")
+    tst.eq(out[0].username, "testuser", "other fields kept")
+    tst.eq(out[1].token, "other", "other profile untouched")
+    tst.eq(list[0].token, long, "input not modified")
+    tst.eq(profiles.replaceToken(list, s1, "u1", "stale", fresh), invalid, "token changed meanwhile")
+    tst.eq(profiles.replaceToken(list, s1, "u9", long, fresh), invalid, "profile removed meanwhile")
+    tst.eq(profiles.replaceToken(list, s2, "u1", long, fresh), invalid, "same user on another server")
+    tst.eq(profiles.replaceToken(invalid, s1, "u1", long, fresh), invalid, "no list")
+end sub
+
+sub keysTests()
+    tst.begin("keys")
+    s = keys.initial()
+    r = keys.handle(s, "fastforward", true, 1000)
+    tst.eq(r.action, "", "ff press no action")
+    r = keys.handle(r.state, "fastforward", false, 1200)
+    tst.eq(r.action, "seekForward", "ff tap seeks")
+    r = keys.handle(r.state, "rewind", true, 2000)
+    r = keys.handle(r.state, "rewind", false, 2700)
+    tst.eq(r.action, "previous", "rw hold previous")
+    r = keys.handle(r.state, "fastforward", true, 3000)
+    r = keys.handle(r.state, "fastforward", false, 3600)
+    tst.eq(r.action, "next", "ff hold next")
+    ' Roku certification 4.9: instant replay rewinds 10 to 25 seconds, every
+    ' press (no restart or previous-track gesture).
+    r = keys.handle(r.state, "replay", true, 5000)
+    tst.eq(r.action, "seekBack", "replay rewinds")
+    r = keys.handle(r.state, "replay", true, 6000)
+    tst.eq(r.action, "seekBack", "second replay rewinds again")
+    r = keys.handle(r.state, "replay", false, 6100)
+    tst.eq(r.action, "", "replay release ignored")
+    tst.ok(keys.SEEK_STEP >= 10 and keys.SEEK_STEP <= 25, "replay step within 10-25 s")
+    r = keys.handle(r.state, "play", true, 1)
+    tst.eq(r.action, "toggle", "play toggles")
+    r = keys.handle(r.state, "play", false, 2)
+    tst.eq(r.action, "", "play release ignored")
+    tst.ok(keys.isGlobal("play") and not keys.isGlobal("OK"), "global keys")
+    tst.eq(keys.clampSeek(5, -10, 200), 0, "clamp low")
+    tst.eq(keys.clampSeek(195, 10, 200), 199, "clamp high")
+    tst.eq(keys.clampSeek(50, 10, invalid), 60, "no duration")
+end sub
+
+sub httpTests()
+    tst.begin("http")
+    crlf = Chr(13) + Chr(10)
+    tst.eq(httpmini.parseRequest("GET / HTTP/1.1" + crlf), invalid, "incomplete")
+    req = httpmini.parseRequest("GET /cb/abc123?code=tok%2Ben&x=1 HTTP/1.1" + crlf + "Host: roku:8888" + crlf + crlf)
+    tst.eq(req.method, "GET", "method")
+    tst.eq(req.path, "/cb/abc123", "path")
+    tst.eq(req.query.code, "tok+en", "query decoded")
+    tst.eq(req.headers.host, "roku:8888", "header")
+    resp = httpmini.response(200, "text/plain", "héllo")
+    tst.ok(Instr(1, resp, "Content-Length: 6") > 0, "content length in bytes")
+    tst.ok(Instr(1, httpmini.redirect("http://ma/login"), "Location: http://ma/login") > 0, "redirect")
+    tst.eq(pairpage.loginUrl("http://192.0.2.10:8095", "Living Room", "http://192.0.2.23:8888/cb/n1"), "http://192.0.2.10:8095/login?device_name=Mass%20TV%20%28Living%20Room%29&return_url=http%3A%2F%2F192.0.2.23%3A8888%2Fcb%2Fn1", "login url")
+    tst.ok(Instr(1, pairpage.message("A <b>", "x"), "A &lt;b&gt;") > 0, "message escapes")
+end sub
+
+sub qrTests()
+    tst.begin("qr")
+    mods = qr.encode("http://192.168.1.23:8888/s/0123456789abcdef")
+    tst.ok(mods <> invalid, "encoded")
+    tst.eq(mods.Count(), 33, "version 4 size")
+    tst.ok(mods[0][0] and mods[0][6] and not mods[1][1] and mods[3][3], "finder pattern")
+    tst.ok(mods[mods.Count() - 8][8], "dark module")
+    runs = qr.darkRuns([[true, true, false, true], [false, false, false, false]])
+    tst.eq(runs, [[0, 0, 2], [0, 3, 1]], "dark runs")
+    cols = qr.darkColumnRuns([[true, true, false], [true, false, false], [true, true, true]])
+    tst.eq(cols, [[0, 0, 3]], "dark column runs (two or more)")
+    tst.eq(qr.encode(String(300, "x")), invalid, "too long")
+end sub

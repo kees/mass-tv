@@ -1,0 +1,130 @@
+' Shows a window of the queue around the current item (never the whole
+' queue: MA's default page is 500 items, about 1.5 MB).
+const WINDOW_BEFORE = 5
+const WINDOW_SIZE = 50
+
+sub init()
+    m.logTag = "queue"
+    m.list = m.top.findNode("list")
+    m.top.findNode("listFade").list = m.list
+    m.count = m.top.findNode("count")
+    m.empty = m.top.findNode("empty")
+    m.loadingIndicator = m.top.findNode("loadingIndicator")
+    m.list.ObserveField("itemSelected", "onSelected")
+    m.list.ObserveField("itemFocused", "onFocused")
+    speakLists([m.list])
+    m.global.ObserveFieldScoped("queueState", "onQueueState")
+    m.focusTarget = m.list
+    m.lastKey = ""
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    refresh()
+end sub
+
+' Refetch when the current item or the item count changes.
+sub onQueueState()
+    q = m.global.queueState
+    key = util.str(util.getPath(q, "current_item.queue_item_id"), "") + "|" + util.str(util.get(q, "items"), "")
+    if key <> m.lastKey then refresh()
+end sub
+
+sub refresh()
+    q = m.global.queueState
+    m.lastKey = util.str(util.getPath(q, "current_item.queue_item_id"), "") + "|" + util.str(util.get(q, "items"), "")
+    qid = actions.playerQueueId()
+    if qid = "" then return
+    cur = util.toInt(util.get(q, "current_index"), 0)
+    if cur = invalid then cur = 0
+    m.windowStart = cur - WINDOW_BEFORE
+    if m.windowStart < 0 then m.windowStart = 0
+    m.currentIndex = cur
+    ' Refreshes redraw a list already shown; only the first load is blank.
+    if m.list.content = invalid then m.loadingIndicator.active = true
+    apic.call("player_queues/items", { queue_id: qid, limit: WINDOW_SIZE, offset: m.windowStart }, onItems)
+end sub
+
+sub onItems(resp as object, ctx as dynamic)
+    m.loadingIndicator.active = false
+    if not resp.ok or not util.isArray(resp.data)
+        m.empty.visible = true
+        return
+    end if
+    root = CreateObject("roSGNode", "ContentNode")
+    i = m.windowStart
+    focusIdx = 0
+    for each qi in resp.data
+        mi = util.get(qi, "media_item")
+        n = CreateObject("roSGNode", "ContentNode")
+        ' Titled like every other track row (the queue item's own name is
+        ' "Artist - Title", which repeats the artist line below it).
+        n.title = util.str(util.get(qi, "name"), "")
+        if util.isAA(mi)
+            if ma.titleOf(mi) <> "" then n.title = ma.titleOf(mi)
+            n.description = ma.subtitleOf(mi)
+        end if
+        ' The track's album art, else the queue item's own image.
+        art = images.urlFor(server(), mi, 80)
+        if art = "" then art = images.proxyUrl(server(), util.get(qi, "image"), 80)
+        n.HDPosterUrl = art
+        if i = m.currentIndex
+            n.ShortDescriptionLine1 = "NOW"
+            focusIdx = root.getChildCount()
+        else
+            n.ShortDescriptionLine1 = (i + 1).ToStr()
+        end if
+        n.ShortDescriptionLine2 = util.formatDuration(util.get(qi, "duration", 0))
+        lead = ""
+        if i = m.currentIndex then lead = "now playing"
+        speech.describeRow(n, util.get(qi, "duration"), lead)
+        n.AddFields({ item: { queue_item_id: qi.queue_item_id, index: i, media_item: mi } })
+        root.appendChild(n)
+        i = i + 1
+    end for
+    m.list.content = root
+    m.list.jumpToItem = focusIdx
+    speakList(m.list, true)
+    m.empty.visible = root.getChildCount() = 0
+    total = util.get(m.global.queueState, "items")
+    if util.isNumber(total) then m.count.text = total.ToStr() + " items"
+end sub
+
+function entryAt(idx as integer) as dynamic
+    if m.list.content = invalid then return invalid
+    n = m.list.content.getChild(idx)
+    if n = invalid then return invalid
+    return n.item
+end function
+
+sub onFocused()
+    e = entryAt(m.list.itemFocused)
+    if e <> invalid then m.top.focusedItem = e.media_item
+end sub
+
+' OK opens the row's options ("Play now" first).
+sub onSelected()
+    e = entryAt(m.list.itemSelected)
+    if e = invalid then return
+    showQueueOptions(e)
+end sub
+
+sub showQueueOptions(e as object)
+    m.optEntry = e
+    title = util.str(util.getPath(e, "media_item.name"), "Queue item")
+    showMenu(title, ["Play now", "Play next", "Remove from queue"], onQueueOption)
+end sub
+
+sub onQueueOption(choice as integer)
+    e = m.optEntry
+    log.debug("queue", "option", { choice: choice })
+    if choice = 0
+        actions.queueCommand("player_queues/play_index", { index: e.queue_item_id })
+    else if choice = 1
+        actions.queueCommand("player_queues/move_item", { queue_item_id: e.queue_item_id, pos_shift: 0 })
+        actions.toast("Playing next")
+    else if choice = 2
+        actions.queueCommand("player_queues/delete_item", { item_id_or_index: e.queue_item_id })
+        actions.toast("Removed")
+    end if
+end sub

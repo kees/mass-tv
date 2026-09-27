@@ -1,0 +1,125 @@
+const MAX_REC_ROWS = 14
+
+sub init()
+    m.logTag = "home"
+    m.rows = m.top.findNode("rows")
+    m.empty = m.top.findNode("empty")
+    m.loadingIndicator = m.top.findNode("loadingIndicator")
+    m.rows.ObserveField("rowItemSelected", "onSelected")
+    m.rows.ObserveField("rowItemFocused", "onFocused")
+    m.focusTarget = m.rows
+    speakLists([m.rows])
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    m.root = CreateObject("roSGNode", "ContentNode")
+    m.rows.content = m.root
+    m.pendingRows = 0
+    m.recent = addRow("Recently played")
+    m.pendingRows = 2
+    m.loadingIndicator.active = true
+    apic.call("music/recently_played_items", { limit: 20 }, onRecent)
+    apic.call("music/recommendations", {}, onRecommendations)
+end sub
+
+function addRow(title as string) as object
+    row = m.root.CreateChild("ContentNode")
+    row.title = title
+    return row
+end function
+
+sub onRecent(resp as object, ctx as dynamic)
+    if resp.ok and util.isArray(resp.data)
+        for each item in resp.data
+            m.recent.appendChild(itemNode(item))
+        end for
+    end if
+    rowDone()
+end sub
+
+sub onRecommendations(resp as object, ctx as dynamic)
+    if not resp.ok or not util.isArray(resp.data)
+        if resp.kind = "auth" then showEmpty("This profile's link is no longer valid. Link it again in Settings.")
+        rowDone()
+        return
+    end if
+    count = 0
+    for each folder in resp.data
+        if count >= MAX_REC_ROWS then exit for
+        ' MA may offer its own "Recently played" row; ours already covers it.
+        duplicate = LCase(util.str(folder.name, "")) = LCase(m.recent.title)
+        if folder.enabled_by_default <> false and not duplicate
+            row = addRow(util.str(folder.name, ""))
+            items = util.get(folder, "items")
+            if util.isArray(items) and items.Count() > 0
+                for each item in items
+                    row.appendChild(itemNode(item))
+                end for
+            else
+                m.pendingRows = m.pendingRows + 1
+                apic.call("music/recommendations/items", { provider: folder.provider, item_id: folder.item_id }, onRowItems, { row: row })
+            end if
+            count = count + 1
+        end if
+    end for
+    log.info("home", "recommendation rows", { rows: count })
+    rowDone()
+end sub
+
+sub onRowItems(resp as object, ctx as object)
+    if resp.ok and util.isArray(resp.data)
+        for each item in resp.data
+            ctx.row.appendChild(itemNode(item))
+        end for
+    end if
+    rowDone()
+end sub
+
+sub rowDone()
+    m.pendingRows = m.pendingRows - 1
+    ' The loading marker sits where the first row shows: drop it once that
+    ' row has something.
+    first = m.root.getChild(0)
+    if first <> invalid and first.getChildCount() > 0
+        m.loadingIndicator.active = false
+        m.top.contentReady = true
+        speakList(m.rows, true)
+    end if
+    if m.pendingRows > 0 then return
+    m.loadingIndicator.active = false
+    m.top.contentReady = true
+    ' Drop rows that came back empty.
+    for i = m.root.getChildCount() - 1 to 0 step -1
+        if m.root.getChild(i).getChildCount() = 0 then m.root.removeChildIndex(i)
+    end for
+    if m.root.getChildCount() = 0 and not m.empty.visible
+        showEmpty("Nothing here yet. Play something from Library or Search, or check that a music service is connected in Music Assistant.")
+    end if
+    ' The rows had focus while loading: say where it landed.
+    speakList(m.rows, true)
+end sub
+
+sub showEmpty(text as string)
+    m.empty.text = text
+    m.empty.visible = true
+    m.loadingIndicator.active = false
+    m.top.contentReady = true
+end sub
+
+function focusedItemAt(rc as dynamic) as dynamic
+    if not util.isArray(rc) or rc.Count() < 2 then return invalid
+    row = m.root.getChild(rc[0])
+    if row = invalid then return invalid
+    n = row.getChild(rc[1])
+    if n = invalid then return invalid
+    return n.item
+end function
+
+sub onFocused()
+    m.top.focusedItem = focusedItemAt(m.rows.rowItemFocused)
+end sub
+
+sub onSelected()
+    openItem(focusedItemAt(m.rows.rowItemSelected))
+end sub

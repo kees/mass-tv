@@ -1,0 +1,65 @@
+import "pkg:/source/lib/Fonts.bs"
+
+' Text starts here with a cover column, or at TEXT_X_NO_ART without one.
+const TEXT_X_ART = 182
+const TEXT_X_NO_ART = 100
+' Room kept right of the text for the duration.
+const RIGHT_RESERVE = 320
+' The title's y with a second line below it, and alone: its ink spans
+' y+3 to y+31 (TrackRow.xml), so 18 centers it in the 70 px row.
+const TITLE_Y = 4
+const TITLE_Y_ALONE = 18
+
+sub init()
+    m.bg = m.top.findNode("bg")
+    m.index = m.top.findNode("index")
+    m.art = m.top.findNode("art")
+    m.title = m.top.findNode("title")
+    m.subtitle = m.top.findNode("subtitle")
+    m.duration = m.top.findNode("duration")
+    m.textX = TEXT_X_ART
+end sub
+
+sub onContent()
+    c = m.top.itemContent
+    if c = invalid then return
+    showArt = not (c.hasField("noArt") and c.noArt = true)
+    m.art.visible = showArt
+    url = ""
+    if showArt and c.HDPosterUrl <> invalid then url = c.HDPosterUrl
+    ' Rows are reused while scrolling; this also clears the old cover.
+    m.art.uri = url
+    m.textX = TEXT_X_NO_ART
+    if showArt then m.textX = TEXT_X_ART
+    ' A title alone (folders, providers) is centered in the row.
+    titleY = TITLE_Y
+    if c.description = invalid or c.description = "" then titleY = TITLE_Y_ALONE
+    m.title.translation = [m.textX, titleY]
+    m.subtitle.translation = [m.textX, m.subtitle.translation[1]]
+    onSize()
+    fonts.label(m.title, c.title, true)
+    fonts.label(m.subtitle, c.description)
+    m.index.text = c.ShortDescriptionLine1
+    m.duration.text = c.ShortDescriptionLine2
+    if c.ShortDescriptionLine1 = "NOW"
+        m.title.color = "#5A8DEE"
+    else
+        m.title.color = "#EEEEF6"
+    end if
+end sub
+
+sub onSize()
+    w = m.top.width
+    if w <= 0 then return
+    m.bg.width = w
+    m.title.width = w - m.textX - RIGHT_RESERVE
+    m.subtitle.width = w - m.textX - RIGHT_RESERVE
+    m.duration.translation = [w - 200, 0]
+end sub
+
+sub onFocus()
+    f = m.top.focusPercent
+    if m.top.itemHasFocus then f = 1
+    if not m.top.listHasFocus then f = 0
+    m.bg.opacity = f
+end sub

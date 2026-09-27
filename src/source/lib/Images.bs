@@ -1,0 +1,129 @@
+import "pkg:/source/lib/Util.bs"
+
+' Artwork URLs through MA's image proxy.
+namespace images
+
+    ' md5("") appears in some providers' placeholder image paths; skip those.
+    const EMPTY_MD5 = "d41d8cd98f00b204e9800998ecf8427e"
+    ' Music Assistant sends its own logo (MASS_LOGO_ONLINE, a raw GitHub URL
+    ' of music_assistant/logo.png) as the cover of an item without one.
+    const MA_LOGO_SUFFIX = "/music_assistant/logo.png"
+
+    ' True for a stand-in rather than a real cover: some providers' blank
+    ' covers and Music Assistant's logo. Those get Mass TV's missing-cover
+    ' placeholder instead (CoverArt).
+    function isStandIn(url as dynamic) as boolean
+        if not util.isNonEmptyString(url) then return false
+        u = LCase(url)
+        return Instr(1, u, images.EMPTY_MD5) > 0 or util.endsWith(u, images.MA_LOGO_SUFFIX)
+    end function
+
+    ' Snaps a requested pixel size to one the proxy accepts.
+    function snapSize(size as integer) as integer
+        allowed = [80, 160, 256, 512, 1024]
+        for each a in allowed
+            if size <= a then return a
+        end for
+        return 1024
+    end function
+
+    ' An image record that stands in for a missing cover: a stand-in URL,
+    ' or Music Assistant's logo on its built-in items (provider "builtin",
+    ' path "logo.png", served through the image proxy).
+    function isStandInImage(image as dynamic) as boolean
+        if not util.isAA(image) then return false
+        path = util.str(util.get(image, "path"), "")
+        if images.isStandIn(path) then return true
+        return LCase(util.str(util.get(image, "provider"), "")) = "builtin" and LCase(path) = "logo.png"
+    end function
+
+    function proxyUrl(serverUrl as string, image as dynamic, size as integer) as string
+        if not util.isAA(image) then return ""
+        path = util.str(util.get(image, "path"), "")
+        if images.isStandInImage(image) then return ""
+        proxyId = util.str(util.get(image, "proxy_id"), "")
+        if proxyId <> "" and serverUrl <> ""
+            return serverUrl + "/imageproxy/" + proxyId + "?size=" + images.snapSize(size).ToStr() + "&fmt=jpg"
+        end if
+        if util.get(image, "remotely_accessible", false) = true and util.startsWith(LCase(path), "http") then return path
+        return ""
+    end function
+
+    ' Chooses the best image for an item: a track's album art first, then the
+    ' item's own image(s) of the wanted type, then its artists' images.
+    function pick(item as dynamic, wanted = "thumb" as string) as dynamic
+        if not util.isAA(item) then return invalid
+        if images.mediaType(item) = "track"
+            albumImg = images.pick(util.get(item, "album"), wanted)
+            if albumImg <> invalid then return albumImg
+        end if
+        direct = util.get(item, "image")
+        if images.usable(direct) then return direct
+        list = util.getPath(item, "metadata.images")
+        if util.isArray(list)
+            fallback = invalid
+            for each img in list
+                if images.usable(img)
+                    if util.str(util.get(img, "type"), "") = wanted then return img
+                    if fallback = invalid then fallback = img
+                end if
+            end for
+            if fallback <> invalid then return fallback
+        end if
+        artists = util.get(item, "artists")
+        if util.isArray(artists)
+            for each a in artists
+                img = images.pick(a, wanted)
+                if img <> invalid then return img
+            end for
+        end if
+        return invalid
+    end function
+
+    function usable(img as dynamic) as boolean
+        if not util.isAA(img) then return false
+        path = util.str(util.get(img, "path"), "")
+        if path = "" then return false
+        return not images.isStandInImage(img)
+    end function
+
+    function mediaType(item as dynamic) as string
+        return util.str(util.get(item, "media_type"), "")
+    end function
+
+    ' Convenience: best URL for an item at a size, or "" if none.
+    function urlFor(serverUrl as string, item as dynamic, size as integer) as string
+        return images.proxyUrl(serverUrl, images.pick(item), size)
+    end function
+
+    ' Up to two letters for a coverless item's placeholder, as MA's web UI
+    ' shows (its initials avatars): the first letter of each of the first
+    ' two words, or the first two of a one-word name, in capitals.
+    ' Punctuation is skipped ("J.S. Bach" gives "JB", "(Live)" gives "L").
+    function initials(title as dynamic) as string
+        text = util.str(title, "")
+        firsts = ""
+        for each word in text.Split(" ")
+            c = images.firstLetters(word, 1)
+            if c <> "" then firsts = firsts + c
+            if Len(firsts) >= 2 then exit for
+        end for
+        if Len(firsts) = 1 then firsts = images.firstLetters(text, 2)
+        return UCase(firsts)
+    end function
+
+    ' The first n letters or digits of text (anything above ASCII counts,
+    ' e.g. "é"), skipping punctuation and spaces.
+    function firstLetters(text as string, n as integer) as string
+        out = ""
+        for i = 1 to Len(text)
+            ch = Mid(text, i, 1)
+            code = Asc(ch)
+            isLetter = (code >= 48 and code <= 57) or (code >= 65 and code <= 90) or (code >= 97 and code <= 122) or code > 127
+            if isLetter then out = out + ch
+            if Len(out) >= n then exit for
+        end for
+        return out
+    end function
+
+end namespace

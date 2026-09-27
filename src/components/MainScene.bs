@@ -1,0 +1,950 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Store.bs"
+import "pkg:/source/lib/MaApi.bs"
+import "pkg:/source/lib/Keys.bs"
+import "pkg:/source/lib/Profiles.bs"
+import "pkg:/source/lib/Jwt.bs"
+import "pkg:/source/lib/ApiClient.bs"
+import "pkg:/source/lib/Actions.bs"
+import "pkg:/source/lib/DeepLink.bs"
+import "pkg:/source/lib/Aim.bs"
+
+const LOG_PULL_PORT = 8889
+
+sub init()
+    m.logTag = "scene"
+    m.screens = m.top.findNode("screens")
+    m.nav = m.top.findNode("nav")
+    m.npBar = m.top.findNode("npBar")
+    m.toast = m.top.findNode("toast")
+    m.player = m.top.findNode("player")
+    m.pollTimer = m.top.findNode("pollTimer")
+    m.seekTimer = m.top.findNode("seekTimer")
+    m.seekClearTimer = m.top.findNode("seekClearTimer")
+    m.stack = []
+    m.keyState = keys.initial()
+    m.seekTarget = -1
+    ' Launch beacons (Roku certification 3.2): see updateLaunchBeacons.
+    m.launchBeaconSent = false
+    m.launchDialogOpen = false
+    m.launchedForPlayback = false
+    m.booted = false
+    ' Playback on the sign-in screen or picker: see followSignedOutPlayback.
+    m.flipScreen = ""
+    m.flipSeen = ""
+    m.flipDismissed = false
+    m.flipActive = false
+
+    startTasks()
+
+    m.nav.entries = [
+        { id: "home", label: "Home" }
+        { id: "library", label: "Library" }
+        { id: "browse", label: "Browse" }
+        { id: "search", label: "Search" }
+        { id: "nowplaying", label: "Now Playing" }
+        { id: "queue", label: "Queue" }
+        ' Shown as the profile name, at the right end.
+        { id: "settings", label: "Settings", profile: true }
+    ]
+    m.nav.ObserveField("selected", "onNavSelected")
+    m.global.ObserveFieldScoped("toast", "onToast")
+    m.global.ObserveFieldScoped("nowPlaying", "onNowPlaying")
+    m.player.ObserveField("syncRequest", "onSyncRequest")
+    m.player.ObserveField("advanceRequest", "onAdvanceRequest")
+    m.pollTimer.ObserveField("fire", "poll")
+    m.seekTimer.ObserveField("fire", "commitSeek")
+    m.seekClearTimer.ObserveField("fire", "clearSeekPreview")
+    m.kickTimer = m.top.findNode("kickTimer")
+    m.kickTimer.ObserveField("fire", "poll")
+    m.global.ObserveFieldScoped("pollKick", "kickPoll")
+    m.lastQueueItemId = ""
+    m.maOnline = true
+    m.reconnectTimer = m.top.findNode("reconnectTimer")
+    m.reconnectTimer.ObserveField("fire", "probeServer")
+    m.renewTimer = m.top.findNode("renewTimer")
+    m.renewTimer.ObserveField("fire", "renewTokens")
+    m.global.api.ObserveFieldScoped("response", "onAnyApiResponse")
+    bootTimer = m.top.findNode("bootTimer")
+    bootTimer.ObserveField("fire", "bootstrap")
+    bootTimer.control = "start"
+end sub
+
+sub startTasks()
+    m.global.player = m.player
+    api = CreateObject("roSGNode", "ApiTask")
+    m.global.api = api
+    api.control = "RUN"
+    if m.global.debugBuild
+        logTask = CreateObject("roSGNode", "LogTask")
+        cfg = { pullPort: LOG_PULL_PORT, ringSize: 3000 }
+        collector = util.str(util.get(store.settings(), "logCollector"), "")
+        if collector <> "" then cfg.collector = collector
+        logTask.config = cfg
+        logTask.control = "RUN"
+        m.global.logTask = logTask
+        log.info("scene", "debug log endpoint", { url: "http://" + firstIp() + ":" + LOG_PULL_PORT.ToStr() + "/" })
+    end if
+    m.input = CreateObject("roSGNode", "InputTask")
+    m.input.ObserveField("input", "onInput")
+    m.input.control = "RUN"
+end sub
+
+function firstIp() as string
+    ips = util.getPath(m.global, "device.ips")
+    if util.isArray(ips) and ips.Count() > 0 then return ips[0]
+    return "roku"
+end function
+
+' --- deep links ---
+
+sub onLaunchArgs()
+    args = m.top.launchArgs
+    if not util.isAA(args) or args.Count() = 0 then return
+    handleDeepLinkParams(args, true)
+end sub
+
+sub onInput(event as object)
+    handleDeepLinkParams(event.GetData(), false)
+end sub
+
+sub handleDeepLinkParams(params as dynamic, atLaunch as boolean)
+    if not util.isAA(params) then return
+    applyDebugParams(params)
+    if params.DoesExist("u") or params.DoesExist("contentId") or params.DoesExist("contentid") or params.DoesExist("t") or params.DoesExist("a")
+        if atLaunch and util.isNonEmptyString(params.u) and params.u.Trim() <> "" then m.launchedForPlayback = true
+        m.player.deeplink = params
+        if atLaunch = false and isLinkScreen(currentScreenName())
+            ' Playback can start before linking finishes; that's fine.
+            log.info("scene", "playback started while linking")
+        end if
+    end if
+end sub
+
+' masstv_* params, honored only in debug builds:
+'   masstv_log=DEBUG           set the log level
+'   masstv_collector=host:port push logs to a collector ("" to stop)
+'   masstv_reset=1             forget server and profiles
+'   masstv_server=host:port    with masstv_token=<MA token>: add and
+'                              activate a profile on that server without
+'                              linking (test loops)
+'   masstv_mdns=<name>         run one mDNS query and log the answers
+'                              (masstv_mdns_type=PTR|SRV|TXT|A|ANY,
+'                              default PTR)
+'   masstv_mdns_to=host:port   send the server screen's mDNS queries there
+'                              instead of the mDNS group (at launch only;
+'                              tests point it at their fake)
+sub applyDebugParams(params as object)
+    if not m.global.debugBuild then return
+    dbg = deeplink.debugParams(params)
+    if dbg.Count() = 0 then return
+    log.info("scene", "debug params", dbg)
+    if util.isNonEmptyString(dbg.log)
+        m.global.logLevel = log.levelFromName(dbg.log, m.global.logLevel)
+        store.setSetting("logLevel", UCase(dbg.log))
+    end if
+    if dbg.DoesExist("collector")
+        store.setSetting("logCollector", util.str(dbg.collector, ""))
+        lt = m.global.logTask
+        if lt <> invalid then lt.config = { collector: util.str(dbg.collector, "") }
+    end if
+    if util.toBool(dbg.reset, false) = true
+        store.clearAll()
+        m.global.session = {}
+        ' Skip the normal bootstrap, which would open a second setup screen.
+        m.booted = true
+        showUnlinkedStart("")
+    end if
+    if util.isNonEmptyString(dbg.server) and util.isNonEmptyString(dbg.token)
+        serverUrl = util.normalizeServer(dbg.server)
+        store.setServer(serverUrl)
+        m.booted = true
+        log.info("scene", "debug profile injection", { server: serverUrl })
+        apic.call("auth/me", {}, onInjectedMe, { token: dbg.token, server: serverUrl }, { server: serverUrl, token: dbg.token })
+    end if
+    if util.isNonEmptyString(dbg.mdns)
+        m.mdnsTask = CreateObject("roSGNode", "MdnsTask")
+        m.mdnsTask.ObserveField("result", "onMdnsResult")
+        m.mdnsTask.request = { name: dbg.mdns, type: util.str(dbg.mdns_type, "PTR"), seconds: 3 }
+        m.mdnsTask.control = "RUN"
+    end if
+end sub
+
+sub onMdnsResult()
+    r = m.mdnsTask.result
+    log.info("scene", "mdns done", { ok: r.ok, error: r.error, replies: r.replies.Count() })
+    for each reply in r.replies
+        for each rec in reply.records
+            log.info("scene", "mdns record", { from: reply.from, type: rec.type, name: rec.name, value: rec.value })
+        end for
+    end for
+    m.mdnsTask = invalid
+end sub
+
+sub onInjectedMe(resp as object, ctx as object)
+    if not resp.ok or not util.isAA(resp.data)
+        log.error("scene", "debug profile injection failed", { status: resp.status })
+        showRoot("setup", {})
+        return
+    end if
+    p = profiles.fromUser(resp.data, ctx.token, ctx.server)
+    store.setProfileList(profiles.upsert(store.profileList(), p))
+    startTokenRenewal()
+    activateProfile(p)
+end sub
+
+' --- startup and profiles ---
+
+sub bootstrap()
+    if m.booted then return
+    m.booted = true
+    list = store.profileList()
+    log.info("scene", "bootstrap", { lastServer: store.server() <> "", profiles: list.Count() })
+    startTokenRenewal()
+    if list.Count() = 0
+        showUnlinkedStart(store.server())
+    else if list.Count() = 1
+        activateProfile(list[0])
+    else
+        showRoot("profiles", {})
+    end if
+end sub
+
+' With no profile linked, Mass TV starts on Now Playing, which works
+' without one (Music Assistant can still play to this TV); the link
+' screen is beneath it, so Back goes there. Launched by MA to play, the
+' playback flip may already have put Now Playing on top.
+sub showUnlinkedStart(server as string)
+    showRoot("setup", { server: server })
+    if currentScreenName() <> "nowplaying" then pushScreen("nowplaying", {})
+end sub
+
+sub activateProfile(p as object)
+    ' Take the stored copy: its token may have been renewed since the
+    ' caller (e.g. the profile picker) read the list.
+    server = util.str(util.get(p, "server"), "")
+    stored = profiles.find(store.profileList(), server, p.user_id)
+    if stored <> invalid then p = stored
+    session = {
+        server: server
+        token: p.token
+        userId: p.user_id
+        displayName: profiles.displayName(p)
+        playerId: store.playerIdFor(server)
+        schema: 0
+    }
+    m.global.session = session
+    store.setLastProfile(profiles.key(p))
+    ' Where linking another profile starts.
+    store.setServer(server)
+    m.nav.profileName = session.displayName
+    updateAllowedHosts(server, "")
+    log.info("scene", "profile active", { user: p.username, server: server, playerId: session.playerId })
+    ' A token close to expiry is renewed (renewTokens); only a failed
+    ' renewal warns, in onTokenRenewed.
+    days = jwt.daysLeft(p.token, CreateObject("roDateTime").AsSeconds())
+    if days <> invalid and days < 0 then actions.toast("This profile's link has expired. Link it again in Settings.")
+    apic.getPath("/info", onServerInfo)
+    apic.call("time", {}, onServerTime, { sentAt: util.nowMs() }, { noAuth: true })
+    apic.call("players/all", {}, onPlayers)
+    if m.launchedForPlayback
+        showRoot("nowplaying", {})
+    else
+        showRoot("home", {})
+    end if
+end sub
+
+' MA never extends a long-lived token (1 year), so each profile's token is
+' replaced with a fresh one before it runs out (profiles.renewalDue), for
+' every profile on this TV, not only the active one. Runs at startup and
+' daily; a failed attempt (e.g. MA unreachable) is retried next time.
+sub startTokenRenewal()
+    renewTokens()
+    m.renewTimer.control = "start"
+end sub
+
+sub renewTokens()
+    nowSec = CreateObject("roDateTime").AsSeconds()
+    name = profiles.tokenName(util.getPath(m.global, "device.name"))
+    ' Each profile's token is renewed on its own server.
+    for each p in store.profileList()
+        server = util.str(util.get(p, "server"), "")
+        if server <> "" and profiles.renewalDue(p, nowSec)
+            log.info("scene", "renewing sign-in", { user: p.username, daysLeft: jwt.daysLeft(p.token, nowSec) })
+            ctx = { userId: p.user_id, who: profiles.displayName(p), oldToken: p.token, server: server }
+            apic.call("auth/token/create", { name: name }, onTokenRenewed, ctx, { server: server, token: p.token })
+        end if
+    end for
+end sub
+
+sub onTokenRenewed(resp as object, ctx as object)
+    token = ""
+    if resp.ok and util.isNonEmptyString(resp.data) then token = resp.data
+    if token = "" or util.str(util.get(jwt.claims(token), "sub"), "") <> ctx.userId
+        log.warn("scene", "could not renew sign-in", { user: ctx.who, status: resp.status, error: resp.error })
+        days = jwt.daysLeft(ctx.oldToken, CreateObject("roDateTime").AsSeconds())
+        if days <> invalid and days < 30 then actions.toast(ctx.who + "'s link expires in " + days.ToStr() + " days. Link the profile again in Settings.")
+        return
+    end if
+    list = profiles.replaceToken(store.profileList(), ctx.server, ctx.userId, ctx.oldToken, token)
+    if list = invalid
+        ' The profile was removed or signed in again meanwhile.
+        log.info("scene", "profile changed during renewal; dropping the new token", { user: ctx.who })
+        revokeToken(token, token, ctx.server)
+        return
+    end if
+    store.setProfileList(list)
+    session = m.global.session
+    if util.isAA(session) and util.str(session.token, "") = ctx.oldToken
+        session.token = token
+        m.global.session = session
+    end if
+    log.info("scene", "sign-in renewed", { user: ctx.who, expires: jwt.expiry(token) })
+    revokeToken(ctx.oldToken, token, ctx.server)
+end sub
+
+' Revokes `token` on MA, authenticating with `authToken`. Failure only
+' leaves the token to expire on its own.
+sub revokeToken(token as string, authToken as string, server as string)
+    tokenId = jwt.tokenId(token)
+    if tokenId = "" then return
+    apic.call("auth/token/revoke", { token_id: tokenId }, onTokenRevoked, invalid, { server: server, token: authToken })
+end sub
+
+sub onTokenRevoked(resp as object, ctx as dynamic)
+    if not resp.ok then log.warn("scene", "could not revoke the old token", { status: resp.status, error: resp.error })
+end sub
+
+sub onServerInfo(resp as object, ctx as dynamic)
+    if not resp.ok
+        actions.toast("Can't reach Music Assistant.")
+        return
+    end if
+    info = resp.data
+    session = m.global.session
+    session.schema = util.toInt(util.get(info, "schema_version"), 0)
+    session.serverVersion = util.str(util.get(info, "server_version"), "")
+    session.baseUrl = util.str(util.get(info, "base_url"), "")
+    m.global.session = session
+    updateAllowedHosts(session.server, session.baseUrl)
+    log.info("scene", "server info", { version: session.serverVersion, schema: session.schema, baseUrl: session.baseUrl })
+    if session.schema > 0 and session.schema < ma.SCHEMA_MIN_SUPPORTED then actions.toast("This Music Assistant version is older than Mass TV supports.")
+end sub
+
+sub onServerTime(resp as object, ctx as dynamic)
+    if not resp.ok or not util.isNumber(resp.data) then return
+    now = util.nowMs()
+    rtt = now - ctx.sentAt
+    localMid = (ctx.sentAt + now) / 2000.0
+    m.global.clockOffset = resp.data - localMid
+    log.debug("scene", "clock offset", { offset: m.global.clockOffset, rttMs: rtt })
+end sub
+
+sub onPlayers(resp as object, ctx as dynamic)
+    if not resp.ok then return
+    dev = m.global.device
+    p = ma.findRokuPlayer(resp.data, dev.ips, util.str(dev.name, ""))
+    session = m.global.session
+    if p = invalid
+        log.warn("scene", "this Roku is not an MA player yet (add MA's Media Assistant (Roku) provider with this app id)", { appId: util.getPath(m.global, "device.appId"), myIps: dev.ips, players: ma.playerSummary(resp.data) })
+        ' A saved player ID this server doesn't list is stale (e.g. another
+        ' server's): sending it only gets errors. Without one, a play says
+        ' this TV isn't a player yet, and MA's next stream teaches the ID.
+        stale = util.str(util.get(session, "playerId"), "")
+        if stale <> "" and not ma.hasPlayer(resp.data, stale)
+            log.warn("scene", "dropping a player ID this server doesn't list", { playerId: stale })
+            session.playerId = ""
+            m.global.session = session
+            store.setPlayerIdFor(util.str(session.server, ""), "")
+        end if
+        return
+    end if
+    if session.playerId <> p.player_id
+        session.playerId = p.player_id
+        m.global.session = session
+        store.setPlayerIdFor(session.server, p.player_id)
+    end if
+    log.info("scene", "this Roku is MA player " + p.player_id)
+end sub
+
+' The stream hosts the player accepts ("Only play streams from this
+' server"): the active server and its base URL, and every linked
+' profile's server, since any of them may play to this TV.
+sub updateAllowedHosts(server as string, baseUrl as string)
+    hosts = []
+    urls = [server, baseUrl]
+    for each p in store.profileList()
+        urls.Push(util.str(util.get(p, "server"), ""))
+    end for
+    for each u in urls
+        pu = util.parseUrl(u)
+        if pu <> invalid then hosts.Push(pu.host)
+    end for
+    if store.settings().strictStreamHosts = false then hosts = []
+    m.player.allowedHosts = hosts
+end sub
+
+' --- screens ---
+
+function screenComponent(name as string) as string
+    map = {
+        setup: "SetupScreen", link: "LinkScreen", profiles: "ProfileScreen", home: "HomeScreen", library: "LibraryScreen",
+        browse: "BrowseScreen", search: "SearchScreen", detail: "DetailScreen", nowplaying: "NowPlayingScreen",
+        queue: "QueueScreen", settings: "SettingsScreen"
+    }
+    return map[name]
+end function
+
+function currentScreen() as dynamic
+    if m.stack.Count() = 0 then return invalid
+    return m.stack.Peek()
+end function
+
+function currentScreenName() as string
+    s = currentScreen()
+    if s = invalid then return ""
+    return s.screenName
+end function
+
+sub showRoot(name as string, params as object)
+    while m.stack.Count() > 0
+        removeScreen(m.stack.Pop())
+    end while
+    pushScreen(name, params)
+end sub
+
+sub pushScreen(name as string, params as object)
+    comp = screenComponent(name)
+    if comp = invalid
+        log.error("scene", "unknown screen " + name)
+        return
+    end if
+    top = currentScreen()
+    if top <> invalid then top.visible = false
+    s = CreateObject("roSGNode", comp)
+    s.AddField("screenName", "string", false)
+    s.screenName = name
+    ' For aiming Up into the nav bar from a row of cards.
+    aim.trackRowLists(s)
+    s.translation = [0, 96]
+    s.ObserveField("navigate", "onScreenNavigate")
+    s.ObserveField("close", "onScreenClose")
+    if s.hasField("profileChosen") then s.ObserveField("profileChosen", "onProfileChosen")
+    if s.hasField("setupDone") then s.ObserveField("setupDone", "onSetupDone")
+    if s.hasField("ambient") then s.ObserveField("ambient", "onAmbient")
+    m.screens.appendChild(s)
+    m.stack.Push(s)
+    s.params = params
+    s.setFocus(true)
+    s.restoreFocus = true
+    log.info("scene", "screen " + name, { depth: m.stack.Count() })
+    afterScreenChange()
+end sub
+
+sub popScreen()
+    if m.stack.Count() <= 1 then return
+    removeScreen(m.stack.Pop())
+    top = currentScreen()
+    top.visible = true
+    top.setFocus(true)
+    top.restoreFocus = true
+    log.info("scene", "back to " + top.screenName)
+    afterScreenChange()
+end sub
+
+sub removeScreen(s as object)
+    ' Lets the screen release what it holds (e.g. the pairing listener).
+    s.closing = true
+    s.UnobserveField("navigate")
+    s.UnobserveField("close")
+    m.screens.removeChild(s)
+end sub
+
+sub afterScreenChange()
+    name = currentScreenName()
+    m.global.currentScreen = name
+    ' Signed out, the nav bar's screens have nothing to show.
+    chrome = not isLinkScreen(name) and signedIn()
+    m.nav.visible = chrome
+    navIds = { home: "home", library: "library", browse: "browse", search: "search", nowplaying: "nowplaying", queue: "queue", settings: "settings" }
+    if navIds.DoesExist(name) then m.nav.current = name
+    m.npBar.enabled = chrome and name <> "nowplaying"
+    updatePolling()
+    updateLaunchBeacons(name)
+    followSignedOutPlayback()
+end sub
+
+function signedIn() as boolean
+    return util.str(util.get(m.global.session, "token"), "") <> ""
+end function
+
+' The screens for linking and picking a profile: no nav bar, no Now
+' Playing bar, and playback flips to Now Playing on top of them.
+function isLinkScreen(name as string) as boolean
+    return name = "setup" or name = "link" or name = "profiles"
+end function
+
+' On the link screens or the profile picker ("Who's listening?"), Mass
+' TV is still a player, whether nobody has signed in yet or someone is
+' switching or adding a profile. A new track starting while one of them
+' shows (Music Assistant, or anything on the network, sent it) brings up
+' Now Playing on top. Back returns there and dismisses Now Playing until
+' playback stops; when playback stops, Now Playing closes by itself. A
+' track already playing when those screens open doesn't flip away from
+' them; the next one does.
+sub followSignedOutPlayback()
+    np = m.global.nowPlaying
+    status = util.str(util.get(np, "status"), "idle")
+    active = status = "playing" or status = "paused" or status = "loading"
+    ' The loaded track: MA's queue item id, else its title.
+    track = util.str(util.get(np, "queueItemId"), "")
+    if track = "" then track = util.str(util.get(np, "title"), "")
+    name = currentScreenName()
+    onPicker = isLinkScreen(name)
+    previous = m.flipScreen
+    m.flipScreen = name
+    wasActive = m.flipActive
+    m.flipActive = active
+    if not active
+        m.flipDismissed = false
+        m.flipSeen = ""
+        ' Only when playback stops: opened by hand (the setup screen's Now
+        ' Playing button) with nothing loaded, it stays.
+        if wasActive and (status = "idle" or status = "stopped") and name = "nowplaying" and m.stack.Count() > 1
+            below = m.stack[m.stack.Count() - 2].screenName
+            if isLinkScreen(below)
+                log.info("scene", "playback stopped; back to " + below)
+                popScreen()
+            end if
+        end if
+        return
+    end if
+    ' Playback that starts before the first screen (launched by MA to play)
+    ' is decided when that screen appears.
+    if name = "" then return
+    if not onPicker
+        ' Seen here, so arriving at the picker doesn't flip for this track.
+        m.flipSeen = track
+        return
+    end if
+    if previous = "nowplaying"
+        m.flipDismissed = true
+        return
+    end if
+    if track <> m.flipSeen and not m.flipDismissed
+        m.flipSeen = track
+        log.info("scene", "new track on " + name + "; showing Now Playing")
+        pushScreen("nowplaying", {})
+    end if
+end sub
+
+' Roku measures launch time (certification 3.2: home screen within 15 s)
+' from AppLaunchComplete, sent once when the first real screen is usable:
+' Home once its first row shows, or Now Playing when launched to play.
+' Sign-in and the profile picker wait for the user, so they are bracketed
+' with AppDialogInitiate/AppDialogComplete, which Roku leaves out.
+sub updateLaunchBeacons(name as string)
+    if m.launchBeaconSent then return
+    if isLinkScreen(name)
+        if not m.launchDialogOpen
+            m.top.signalBeacon("AppDialogInitiate")
+            m.launchDialogOpen = true
+        end if
+        return
+    end if
+    if m.launchDialogOpen
+        m.top.signalBeacon("AppDialogComplete")
+        m.launchDialogOpen = false
+    end if
+    top = currentScreen()
+    if name = "home" and top <> invalid and top.contentReady <> true
+        top.ObserveField("contentReady", "onHomeContentReady")
+        return
+    end if
+    ' Launched by MA to play: Roku wants the beacon when playback starts
+    ' (onNowPlaying sends it then).
+    if name = "nowplaying" and m.launchedForPlayback and not isPlaying() then return
+    sendLaunchComplete()
+end sub
+
+function isPlaying() as boolean
+    return util.str(util.get(m.global.nowPlaying, "status"), "") = "playing"
+end function
+
+sub onHomeContentReady(event as object)
+    if event.GetData() = true then sendLaunchComplete()
+end sub
+
+sub sendLaunchComplete()
+    if m.launchBeaconSent then return
+    m.launchBeaconSent = true
+    m.top.signalBeacon("AppLaunchComplete")
+    log.info("scene", "launch complete", { screen: currentScreenName() })
+end sub
+
+sub onScreenNavigate(event as object)
+    req = event.GetData()
+    if not util.isAA(req) then return
+    if req.root = true
+        showRoot(req.screen, util.get(req, "params", {}))
+    else
+        pushScreen(req.screen, util.get(req, "params", {}))
+    end if
+end sub
+
+sub onScreenClose()
+    popScreen()
+end sub
+
+' Full-screen ambient view: hide the nav bar so nothing sits still on the
+' panel while the art drifts; restore it when the view wakes.
+sub onAmbient(event as object)
+    ambient = event.GetData() = true
+    log.debug("scene", "ambient view", { on: ambient })
+    m.nav.visible = not ambient
+end sub
+
+sub onNavSelected()
+    id = m.nav.selected
+    log.debug("scene", "nav " + id)
+    showRoot(id, {})
+end sub
+
+sub onProfileChosen(event as object)
+    p = event.GetData()
+    if util.isAA(p) and p.user_id <> invalid then activateProfile(p)
+end sub
+
+sub onSetupDone(event as object)
+    p = event.GetData()
+    if not util.isAA(p) then return
+    list = profiles.upsert(store.profileList(), p)
+    store.setProfileList(list)
+    actions.toast("Welcome, " + profiles.displayName(p))
+    activateProfile(p)
+end sub
+
+sub onToast()
+    m.toast.text = m.global.toast
+end sub
+
+' --- now playing, polling, and seeking ---
+
+' --- connection status ---
+
+' Every API response says whether MA is reachable. Report changes once (a
+' toast and the nav bar marker) instead of one error toast per action.
+sub onAnyApiResponse(event as object)
+    r = event.GetData()
+    if not util.isAA(r) then return
+    unreachable = r.kind = "network" or r.kind = "timeout"
+    if unreachable and m.maOnline
+        m.maOnline = false
+        m.nav.offline = true
+        host = util.str(util.getPath(util.parseUrl(util.str(util.get(m.global.session, "server"), "")), "host"), "the server")
+        log.warn("scene", "Music Assistant unreachable", { status: r.status, error: r.error })
+        actions.toast("Can't reach Music Assistant at " + host + ". Retrying…")
+        m.reconnectTimer.control = "start"
+    else if not unreachable and not m.maOnline
+        m.maOnline = true
+        m.nav.offline = false
+        m.reconnectTimer.control = "stop"
+        log.info("scene", "Music Assistant reachable again")
+        actions.toast("Reconnected to Music Assistant")
+        poll()
+    end if
+end sub
+
+sub probeServer()
+    if util.str(util.get(m.global.session, "server"), "") = "" then return
+    apic.getPath("/info", invalid)
+end sub
+
+sub kickPoll()
+    m.kickTimer.control = "stop"
+    m.kickTimer.control = "start"
+end sub
+
+sub onNowPlaying()
+    np = m.global.nowPlaying
+    qiid = util.str(util.get(np, "queueItemId"), "")
+    if qiid <> m.lastQueueItemId
+        m.lastQueueItemId = qiid
+        if qiid <> "" then kickPoll()
+    end if
+    if m.seekTarget >= 0
+        curPos = util.get(np, "position", -100)
+        if Abs(curPos - m.seekTarget) < 2 then clearSeekPreview()
+    end if
+    ' Learn our player id from MA's stream URL if we don't know it yet.
+    pid = util.str(util.get(np, "playerId"), "")
+    session = m.global.session
+    if pid <> "" and util.isAA(session) and util.str(session.playerId, "") = "" and session.server <> invalid
+        session.playerId = pid
+        m.global.session = session
+        store.setPlayerIdFor(session.server, pid)
+        log.info("scene", "learned player id from stream", { playerId: pid })
+    end if
+    followSignedOutPlayback()
+    if not m.launchBeaconSent and m.launchedForPlayback and isPlaying() and currentScreenName() = "nowplaying" then sendLaunchComplete()
+    updatePolling()
+end sub
+
+sub updatePolling()
+    status = util.str(util.get(m.global.nowPlaying, "status"), "idle")
+    active = status = "playing" or status = "paused" or status = "loading"
+    name = currentScreenName()
+    interval = 0
+    if name = "nowplaying" or name = "queue"
+        interval = 5
+    else if active
+        interval = 30
+    end if
+    if interval = 0
+        if m.pollTimer.control <> "stop" then m.pollTimer.control = "stop"
+    else if m.pollTimer.duration <> interval or m.pollTimer.control <> "start"
+        m.pollTimer.duration = interval
+        m.pollTimer.control = "start"
+        poll()
+    end if
+end sub
+
+sub poll()
+    qid = actions.playerQueueId()
+    if qid = "" or util.str(util.get(m.global.session, "token"), "") = "" then return
+    apic.call("player_queues/get", { queue_id: qid }, onQueue)
+end sub
+
+sub onQueue(resp as object, ctx as dynamic)
+    if not resp.ok or not util.isAA(resp.data) then return
+    q = resp.data
+    slim = {
+        queue_id: q.queue_id
+        state: q.state
+        current_index: q.current_index
+        items: q.items
+        shuffle_enabled: q.shuffle_enabled
+        repeat_mode: q.repeat_mode
+        elapsed_time: q.elapsed_time
+        elapsed_time_last_updated: q.elapsed_time_last_updated
+        current_item: slimQueueItem(q.current_item)
+        next_item: slimQueueItem(q.next_item)
+        fetchedAt: util.nowMs()
+    }
+    prev = m.global.queueState
+    if util.str(util.getPath(prev, "current_item.queue_item_id"), "") <> util.str(util.getPath(slim, "current_item.queue_item_id"), "")
+        log.debug("scene", "queue current item changed", { item: util.getPath(slim, "current_item.name") })
+    end if
+    m.global.queueState = slim
+    if m.pendingSync = true
+        m.pendingSync = false
+        ' A restarted stream starts at the current item's seek_position (0
+        ' for a restart). The queue's elapsed time lags until MA's next poll
+        ' of the Roku, so it's only the fallback.
+        seekPos = util.getPath(q, "current_item.streamdetails.seek_position")
+        if util.isNumber(seekPos)
+            m.player.serverPos = seekPos
+        else
+            serverNow = util.nowMs() / 1000.0 + m.global.clockOffset
+            m.player.serverPos = ma.elapsedOf(q, serverNow)
+        end if
+    end if
+end sub
+
+function slimQueueItem(qi as dynamic) as dynamic
+    if not util.isAA(qi) then return invalid
+    mi = qi.media_item
+    out = { queue_item_id: qi.queue_item_id, name: qi.name, duration: qi.duration, image: qi.image }
+    if util.isAA(mi)
+        out.media_item = {
+            uri: mi.uri, name: mi.name, version: mi.version, media_type: mi.media_type, item_id: mi.item_id,
+            provider: mi.provider, artists: mi.artists, album: mi.album, favorite: mi.favorite
+        }
+    end if
+    return out
+end function
+
+sub onSyncRequest()
+    m.pendingSync = true
+    poll()
+end sub
+
+sub onAdvanceRequest()
+    actions.queueCommand("player_queues/next")
+end sub
+
+sub startSeek(delta as integer)
+    np = m.global.nowPlaying
+    base = util.get(np, "position", 0)
+    if m.seekTarget >= 0 then base = m.seekTarget
+    m.seekTarget = keys.clampSeek(base, delta, util.get(np, "duration"))
+    m.npBar.seekPreview = m.seekTarget
+    top = currentScreen()
+    if top <> invalid and top.hasField("seekPreview") then top.seekPreview = m.seekTarget
+    m.seekTimer.control = "stop"
+    m.seekTimer.control = "start"
+end sub
+
+sub commitSeek()
+    if m.seekTarget < 0 then return
+    target = Int(m.seekTarget)
+    log.info("scene", "seek", { target: target })
+    m.player.seekSent = target
+    actions.queueCommand("player_queues/seek", { position: target })
+    m.seekClearTimer.control = "start"
+end sub
+
+sub clearSeekPreview()
+    m.seekTarget = -1
+    m.npBar.seekPreview = -1
+    top = currentScreen()
+    if top <> invalid and top.hasField("seekPreview") then top.seekPreview = -1
+end sub
+
+' --- keys ---
+
+' The horizontal center of the cursor on screen `top` (lib/Aim.bs), or -1.
+function cursorCenterX(top as dynamic) as float
+    x = aim.cursorCenterX(top)
+    if top <> invalid then log.debug("scene", "aim", { widget: aim.focusedLeaf(top).subtype(), x: x })
+    return x
+end function
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if keys.isGlobal(key)
+        r = keys.handle(m.keyState, key, press, util.nowMs())
+        m.keyState = r.state
+        if r.action <> "" then globalAction(r.action)
+        return true
+    end if
+    if not press then return false
+    log.trace("scene", "key " + key)
+    ' Up to the nav bar and Down from it aim at the entry or item most
+    ' directly above or below, when the screen reports its cursor's x.
+    if key = "up" and m.nav.visible and not m.nav.isInFocusChain()
+        top = currentScreen()
+        x = -1
+        ' A screen may report its cursor itself (Library's tab row, drawn
+        ' as text); else measure the widget that reported the cursor.
+        if top <> invalid and top.hasField("focusX") then x = top.focusX
+        if x < 0 then x = cursorCenterX(top)
+        m.nav.aimX = x
+        m.nav.setFocus(true)
+        return true
+    end if
+    ' A grid refused Down (the row below is shorter): go to its closest card.
+    if key = "down" and not m.nav.isInFocusChain() and currentScreen() <> invalid
+        if aim.gridDown(aim.focusedLeaf(currentScreen())) then return true
+    end if
+    if key = "down" and m.nav.isInFocusChain()
+        top = currentScreen()
+        if top <> invalid
+            ' A screen may aim itself (Library's tab row); then the widget
+            ' that has the focus moves to the item below the nav cursor.
+            if top.hasField("aimX") then top.aimX = m.nav.cursorX
+            top.setFocus(true)
+            top.restoreFocus = true
+            aim.aimInto(aim.focusedLeaf(top), m.nav.cursorX)
+        end if
+        return true
+    end if
+    if key = "back"
+        if m.nav.isInFocusChain()
+            top = currentScreen()
+            if top <> invalid
+                top.setFocus(true)
+                top.restoreFocus = true
+            end if
+            return true
+        end if
+        if m.stack.Count() > 1
+            popScreen()
+            return true
+        end if
+        name = currentScreenName()
+        if name <> "home" and not isLinkScreen(name)
+            showRoot("home", {})
+            return true
+        end if
+        confirmExit()
+        return true
+    end if
+    ' Mass TV doesn't use the Options (*) key: Roku OS takes it for its own
+    ' panel whenever media plays, so every menu has an on-screen route.
+    return false
+end function
+
+sub globalAction(action as string)
+    log.debug("scene", "global " + action)
+    status = util.str(util.get(m.global.nowPlaying, "status"), "idle")
+    loaded = status = "playing" or status = "paused" or status = "loading"
+    ' Signed out, only pause and resume work: seeking and changing tracks go
+    ' through Music Assistant's API.
+    if not signedIn()
+        if action = "toggle" and loaded then m.player.command = "toggle"
+        return
+    end if
+    if action = "toggle"
+        ' Something loaded: toggle (this is also how MA's keypress/Play
+        ' arrives). Nothing loaded: play the focused item.
+        if loaded
+            m.player.command = "toggle"
+        else
+            top = currentScreen()
+            item = invalid
+            ctx = invalid
+            if top <> invalid and top.hasField("focusedItem") then item = top.focusedItem
+            if top <> invalid and top.hasField("focusedPlay") then ctx = top.focusedPlay
+            if util.isAA(ctx) and util.isNonEmptyString(ctx.media)
+                shown = util.get(ctx, "shown")
+                if not util.isAA(shown) then shown = item
+                actions.play(ctx.media, "replace", util.str(ctx.startItem, ""), util.get(ctx, "shuffle") = true, util.str(ctx.sortBy, ""), shown)
+            else if util.isAA(item) and ma.isPlayable(item)
+                actions.play(item, "replace")
+            else if status = "idle" or status = "stopped" or status = "error"
+                actions.queueCommand("player_queues/play")
+            end if
+        end if
+    else if action = "seekBack"
+        if loaded then startSeek(-keys.SEEK_STEP)
+    else if action = "seekForward"
+        if loaded then startSeek(keys.SEEK_STEP)
+    else if action = "next"
+        actions.queueCommand("player_queues/next")
+    else if action = "previous"
+        actions.queueCommand("player_queues/previous")
+    end if
+end sub
+
+' Back on a root screen: one confirmation dialog, then exit to the Roku
+' home screen (Roku certification 4.6 allows exactly this). Leaving the
+' app stops playback, so the dialog says so while music plays.
+sub confirmExit()
+    dlg = CreateObject("roSGNode", "StandardMessageDialog")
+    dlg.title = "Exit Mass TV?"
+    status = util.str(util.get(m.global.nowPlaying, "status"), "idle")
+    if status = "playing" or status = "paused" or status = "loading"
+        dlg.message = ["The music stops when you leave."]
+    end if
+    dlg.buttons = ["Exit", "Cancel"]
+    dlg.ObserveField("buttonSelected", "onExitButton")
+    dlg.ObserveField("wasClosed", "onDialogClosed")
+    m.top.dialog = dlg
+end sub
+
+sub onExitButton(event as object)
+    m.top.dialog.close = true
+    if event.GetData() = 0
+        log.info("scene", "exit confirmed")
+        m.top.exitRequested = true
+    end if
+end sub
+
+sub onDialogClosed()
+    top = currentScreen()
+    if top <> invalid
+        top.setFocus(true)
+        top.restoreFocus = true
+    end if
+end sub

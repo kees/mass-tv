@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Display-only now-playing strip at the bottom of browsing screens. Never
+     focusable. Driven by m.global.nowPlaying, and by
+     m.global.playPending while a play request waits for MA. -->
+<component name="NowPlayingBar" extends="Group">
+    <interface>
+        <field id="seekPreview" type="float" value="-1" onChange="render" />
+        <!-- MainScene turns the bar off on screens that show playback
+             themselves; it is then hidden even while music plays. -->
+        <field id="enabled" type="boolean" value="true" onChange="render" />
+    </interface>
+    <children>
+        <Rectangle id="bg" color="#171C22" width="1920" height="104" />
+        <Rectangle id="track" color="#2A313B" width="1920" height="4" />
+        <Rectangle id="progress" color="#5A8DEE" width="0" height="4" />
+        <Poster id="art" translation="[96,16]" width="72" height="72" loadWidth="80" loadHeight="80" />
+        <Label id="title" translation="[188,18]" width="1200" height="36" color="#EEEEF6" font="font:SmallBoldSystemFont" />
+        <Label id="artist" translation="[188,54]" width="1200" height="32" color="#9A9FB0" font="font:SmallestSystemFont" />
+        <Label id="time" translation="[1424,32]" width="400" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" />
+        <BusySpinner id="spinner" translation="[108,28]" visible="false" />
+        <!-- Beside "Loading…" in the time slot, at the bar's right edge,
+             centered on the text's letters (measured on the device: caps to
+             baseline span y 34 to 58 in the bar). -->
+        <BusySpinner id="timeSpinner" translation="[1788,28]" visible="false" />
+        <!-- Gives up on a play request MA never answered with a stream. -->
+        <Timer id="pendingTimer" repeat="false" duration="20" />
+    </children>
+</component>

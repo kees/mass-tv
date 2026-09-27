@@ -1,0 +1,104 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+
+' Share of the edge row the fade covers: the whole row, clear at its inner
+' edge and strongest at the list's edge (fade_*.png sets the curve).
+const FADE_SHARE = 1.0
+
+sub init()
+    m.topFade = m.top.findNode("top")
+    m.bottomFade = m.top.findNode("bottom")
+    m.content = invalid
+    m.first = 0
+    m.numRows = 0
+    m.lastState = invalid
+end sub
+
+sub onList()
+    list = m.top.list
+    if list = invalid then return
+    m.top.translation = list.translation
+    rowH = list.itemSize[1]
+    rowStep = rowH + list.itemSpacing[1]
+    m.numRows = list.numRows
+    fadeH = rowH * FADE_SHARE
+    m.topFade.width = list.itemSize[0]
+    m.topFade.height = fadeH
+    m.bottomFade.width = list.itemSize[0]
+    m.bottomFade.height = fadeH
+    m.bottomFade.translation = [0, (m.numRows - 1) * rowStep + rowH - fadeH]
+    ' Clip the list to its visible rows. MarkupList draws a row scrolling
+    ' in below its last row (or out above its first) outside its bounds,
+    ' where no fade covers it: it flashed at full strength before sliding
+    ' under the fade.
+    list.clippingRect = [0, 0, list.itemSize[0], (m.numRows - 1) * rowStep + rowH]
+    list.ObserveField("currFocusRow", "onFocused")
+    list.ObserveField("content", "onContent")
+    onContent()
+end sub
+
+' Lists here fill their content node after assigning it (Library appends
+' pages as you scroll), so follow the node's own changes too. New content
+' starts at the top. The list also re-announces the same content node
+' (seen on the device after a focus move); that keeps the window.
+sub onContent()
+    content = m.top.list.content
+    if m.content <> invalid and content <> invalid and m.content.isSameNode(content) then return
+    if m.content <> invalid then m.content.UnobserveField("change")
+    m.content = content
+    if m.content <> invalid then m.content.ObserveField("change", "update")
+    log.trace("fade", "new content", { count: countOf(m.content) })
+    m.first = 0
+    onFocused()
+end sub
+
+function countOf(content as dynamic) as integer
+    if content = invalid then return 0
+    return content.getChildCount()
+end function
+
+' The list reports no scroll offset, so follow the window here: with
+' floatingFocus the list scrolls only when focus would leave the visible
+' rows, just far enough. currFocusRow is the focus position as a
+' fractional item index that moves through the scroll animation (5, 5.71,
+' 5.93, 5.99, 6 over about 0.2 s on the device), while itemFocused changes
+' only at its end. Following currFocusRow makes m.first fractional too,
+' so the fades change with the scroll instead of popping in after it.
+sub onFocused()
+    f = m.top.list.currFocusRow
+    if util.isNumber(f) and f >= 0
+        if f < m.first then m.first = f
+        if f > m.first + m.numRows - 1 then m.first = f - m.numRows + 1
+    end if
+    update()
+end sub
+
+' Each fade's opacity is how far (up to one row) the list is scrolled away
+' from that end.
+sub update()
+    count = countOf(m.content)
+    topAmount = 0
+    bottomAmount = 0
+    if count > 0
+        topAmount = clampUnit(m.first)
+        bottomAmount = clampUnit(count - m.numRows - m.first)
+    end if
+    m.topFade.opacity = topAmount
+    m.topFade.visible = topAmount > 0
+    m.bottomFade.opacity = bottomAmount
+    m.bottomFade.visible = bottomAmount > 0
+    ' This runs for every animation step and for every item field update
+    ' (the content node's change field fires dozens of times per key), so
+    ' log only settled states that differ from the last one.
+    if m.first <> Int(m.first) then return
+    state = [m.first, count, topAmount, bottomAmount]
+    if m.lastState <> invalid and FormatJson(state) = FormatJson(m.lastState) then return
+    m.lastState = state
+    log.trace("fade", "update", { focused: m.top.list.itemFocused, first: m.first, count: count, numRows: m.numRows, top: topAmount, bottom: bottomAmount })
+end sub
+
+function clampUnit(x as float) as float
+    if x < 0 then return 0
+    if x > 1 then return 1
+    return x
+end function

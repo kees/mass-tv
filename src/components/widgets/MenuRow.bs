@@ -1,0 +1,46 @@
+import "pkg:/source/lib/FocusRing.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+sub init()
+    m.pill = m.top.findNode("pill")
+    m.bg = m.top.findNode("bg")
+    m.label = m.top.findNode("label")
+end sub
+
+sub onContent()
+    render()
+end sub
+
+sub onSize()
+    m.pill.width = m.top.width
+    m.pill.height = m.top.height
+    m.bg.width = m.top.width
+    m.bg.height = m.top.height
+    m.label.width = m.top.width - 48
+    m.label.height = m.top.height
+end sub
+
+sub render()
+    c = m.top.itemContent
+    if c = invalid then return
+    fonts.label(m.label, c.title)
+    f = m.top.focusPercent
+    if m.top.itemHasFocus then f = 1
+    if not m.top.listHasFocus then f = 0
+    m.bg.opacity = f
+    chosen = c.hasField("chosen") and c.chosen = true
+    plain = c.hasField("plain") and c.plain = true
+    m.pill.visible = not plain
+    under = f > 0.5
+    if chosen and under
+        m.label.color = focusring.SELECTED_TEXT
+    else if chosen
+        m.label.color = focusring.SELECTED
+    else if under
+        m.label.color = focusring.TEXT
+    else if plain
+        m.label.color = focusring.PLAIN_TEXT
+    else
+        m.label.color = focusring.PILL_TEXT
+    end if
+end sub

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component name="HomeScreen" extends="BaseScreen">
+    <interface>
+        <!-- Output: the first row has content (or loading finished with
+             nothing to show). MainScene sends the AppLaunchComplete
+             beacon on it. -->
+        <field id="contentReady" type="boolean" />
+    </interface>
+    <children>
+        <RowList
+            id="rows"
+            translation="[96,24]"
+            itemComponentName="PosterCard"
+            itemSize="[1824,396]"
+            itemSpacing="[0,16]"
+            numRows="3"
+            rowItemSize="[[240,320]]"
+            rowItemSpacing="[[32,0]]"
+            showRowLabel="[true]"
+            rowLabelOffset="[[0,8]]"
+            rowLabelColor="#9A9FB0"
+            rowLabelFont="font:MediumBoldSystemFont"
+            drawFocusFeedback="false"
+            rowFocusAnimationStyle="floatingFocus"
+            vertFocusAnimationStyle="fixedFocus" />
+        <Label id="empty" translation="[96,200]" width="1728" color="#9A9FB0" font="font:MediumSystemFont" wrap="true" visible="false" />
+        <LoadingIndicator id="loadingIndicator" translation="[96,200]" />
+    </children>
+</component>

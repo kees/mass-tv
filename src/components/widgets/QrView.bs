@@ -1,0 +1,45 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Qr.bs"
+
+sub init()
+    m.bg = m.top.findNode("bg")
+    m.modules = m.top.findNode("modules")
+end sub
+
+sub render()
+    m.modules.removeChildrenIndex(m.modules.getChildCount(), 0)
+    size = m.top.size
+    m.bg.width = size
+    m.bg.height = size
+    text = m.top.text
+    if text = "" then return
+    mods = qr.encode(text)
+    if mods = invalid
+        log.warn("qr", "text too long for QR", { length: Len(text) })
+        return
+    end if
+    ' The white square is exactly `size`; the modules are whole cells, as
+    ' big as fit with the 4-cell quiet zone QR requires, centered, and
+    ' the rest of the square widens the quiet zone.
+    cell = Int(size / (mods.Count() + 8))
+    if cell < 1 then cell = 1
+    quiet = Int((size - mods.Count() * cell) / 2)
+    ' Rows of dark modules, then columns: together no two dark modules
+    ' meet on a rectangle's edge (see qr.darkColumnRuns).
+    for each r in qr.darkRuns(mods)
+        addModules(quiet + r[1] * cell, quiet + r[0] * cell, r[2] * cell, cell)
+    end for
+    for each r in qr.darkColumnRuns(mods)
+        addModules(quiet + r[0] * cell, quiet + r[1] * cell, cell, r[2] * cell)
+    end for
+end sub
+
+sub addModules(x as integer, y as integer, width as integer, height as integer)
+    rect = CreateObject("roSGNode", "Rectangle")
+    rect.color = "#000000"
+    rect.width = width
+    rect.height = height
+    rect.translation = [x, y]
+    m.modules.appendChild(rect)
+end sub

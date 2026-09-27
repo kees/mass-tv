@@ -1,0 +1,155 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Speech.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+' Panel padding, the row height, and the rows' text inset (MenuRow).
+const PAD = 40
+const ROW_H = 56
+const ROW_GAP = 8
+const TEXT_INSET = 24
+const TITLE_H = 60
+const MIN_W = 360
+
+sub init()
+    m.panel = m.top.findNode("panel")
+    m.titleLabel = m.top.findNode("titleLabel")
+    m.rule = m.top.findNode("rule")
+    m.list = m.top.findNode("list")
+    m.probe = m.top.findNode("probe")
+    m.list.ObserveField("itemSelected", "onItemSelected")
+    m.list.ObserveField("itemFocused", "onItemFocused")
+    ' The menu speaks its rows itself (speakRow), so its title can go
+    ' first when it opens.
+    m.list.muteAudioGuide = true
+    m.spoken = ""
+end sub
+
+sub onTitle()
+    fonts.label(m.titleLabel, m.top.title, true)
+    layout()
+end sub
+
+' Same number of items: relabel in place, so focus stays put (e.g. a
+' switch changing). Otherwise rebuild the rows.
+sub onItems()
+    items = m.top.items
+    if not util.isArray(items) then items = []
+    chosen = m.top.chosen
+    content = m.list.content
+    if content = invalid or content.getChildCount() <> items.Count()
+        content = CreateObject("roSGNode", "ContentNode")
+        for each text in items
+            n = content.CreateChild("ContentNode")
+            ' A menu is a list: its rows have no resting pill.
+            n.AddFields({ chosen: false, plain: true })
+        end for
+        m.list.numRows = items.Count()
+        m.list.content = content
+    end if
+    for i = 0 to items.Count() - 1
+        n = content.getChild(i)
+        n.title = items[i]
+        n.chosen = util.isArray(chosen) and i < chosen.Count() and chosen[i] = true
+    end for
+    layout()
+    ' A label or switch changing under the cursor is said again.
+    if m.list.hasFocus() and rowSpeech(m.list.itemFocused) <> m.spoken then speakRow(false)
+end sub
+
+' Sizes the panel to its widest label (or the title, or a size hint: a
+' label an item may change to) and centers it.
+sub layout()
+    items = m.top.items
+    if not util.isArray(items) then items = []
+    texts = []
+    texts.Append(items)
+    if util.isArray(m.top.sizeHints) then texts.Append(m.top.sizeHints)
+    w = MIN_W
+    for each text in texts
+        m.probe.text = text
+        tw = m.probe.boundingRect().width + 2 * TEXT_INSET
+        if tw > w then w = tw
+    end for
+    m.titleLabel.width = 0
+    tw = m.titleLabel.boundingRect().width
+    if tw > w then w = tw
+    w = Int(w + 0.999)
+    rowsH = items.Count() * (ROW_H + ROW_GAP) - ROW_GAP
+    if rowsH < 0 then rowsH = 0
+    panelW = w + 2 * PAD
+    panelH = PAD + TITLE_H + 24 + rowsH + PAD
+    x = (1920 - panelW) / 2
+    top = (1080 - panelH) / 2
+    m.panel.width = panelW
+    m.panel.height = panelH
+    m.panel.translation = [x, top]
+    m.titleLabel.translation = [x + PAD, top + PAD]
+    m.rule.width = w
+    m.rule.translation = [x + PAD, top + PAD + TITLE_H]
+    m.list.itemSize = [w, ROW_H]
+    m.list.translation = [x + PAD, top + PAD + TITLE_H + 24]
+end sub
+
+sub onActive()
+    if not m.top.active then return
+    ' Taking focus reports the focused row; it's said with the title.
+    m.spoken = rowSpeech(m.list.itemFocused)
+    m.list.setFocus(true)
+    speakRow(true)
+end sub
+
+' A row as the screen reader says it, like the screens' lists: "Name (A
+' to Z), selected, button 1 of 6".
+function rowSpeech(i as integer) as string
+    items = m.top.items
+    if not util.isArray(items) or i < 0 or i >= items.Count() then return ""
+    parts = [labelAt(i)]
+    chosen = m.top.chosen
+    if util.isArray(chosen) and i < chosen.Count() and chosen[i] = true then parts.Push("selected")
+    parts.Push("button " + speech.position(i, items.Count()))
+    return speech.join(parts)
+end function
+
+' withTitle: the menu just opened, so its title goes first.
+sub speakRow(withTitle as boolean)
+    m.spoken = rowSpeech(m.list.itemFocused)
+    text = m.spoken
+    if withTitle then text = speech.join([m.top.title, "menu", text])
+    speech.say(text)
+end sub
+
+sub onItemSelected()
+    log.debug("menu", "select", { index: m.list.itemSelected, label: labelAt(m.list.itemSelected) })
+    m.top.selected = m.list.itemSelected
+end sub
+
+sub onItemFocused()
+    log.debug("menu", "focus", { index: m.list.itemFocused, label: labelAt(m.list.itemFocused) })
+    ' (Not the row just said, e.g. with the title as the menu opened.)
+    if m.list.hasFocus() and rowSpeech(m.list.itemFocused) <> m.spoken then speakRow(false)
+end sub
+
+function labelAt(i as integer) as string
+    items = m.top.items
+    if util.isArray(items) and i >= 0 and i < items.Count() then return util.str(items[i], "")
+    return ""
+end function
+
+' The list moves the focus itself; at either end it lets Up or Down
+' through, and the menu wraps around. Every other key stops here too, so
+' nothing behind the menu reacts while it shows.
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return true
+    n = 0
+    if m.list.content <> invalid then n = m.list.content.getChildCount()
+    if key = "up" and n > 0
+        m.list.jumpToItem = n - 1
+    else if key = "down" and n > 0
+        m.list.jumpToItem = 0
+    else if key = "back"
+        log.debug("menu", "back")
+        m.top.closed = true
+    end if
+    return true
+end function

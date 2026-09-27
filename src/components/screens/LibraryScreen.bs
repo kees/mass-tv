@@ -1,0 +1,562 @@
+import "pkg:/source/lib/FocusRing.bs"
+import "pkg:/source/lib/Store.bs"
+import "pkg:/source/lib/LibrarySort.bs"
+
+const PAGE_SIZE = 60
+const PREFETCH_MARGIN = 12
+const TAB_SPACING = 56
+' The sort label's right edge: its focus ring then ends at the screen's
+' right margin (1824).
+const FILTER_RIGHT = 1806
+' Between the view label and the sort label (room for both rings).
+const LABEL_GAP = 60
+
+sub init()
+    m.logTag = "library"
+    m.tabsGroup = m.top.findNode("tabs")
+    m.filterLabel = m.top.findNode("filter")
+    m.viewLabel = m.top.findNode("viewLabel")
+    m.grid = m.top.findNode("grid")
+    m.list = m.top.findNode("list")
+    m.listFade = m.top.findNode("listFade")
+    m.listFade.list = m.list
+    m.empty = m.top.findNode("empty")
+    m.loadingIndicator = m.top.findNode("loadingIndicator")
+    m.tabs = [
+        { id: "playlists", label: "Playlists", command: "music/playlists/library_items" }
+        { id: "albums", label: "Albums", command: "music/albums/library_items" }
+        { id: "artists", label: "Artists", command: "music/artists/library_items" }
+        { id: "tracks", label: "Tracks", command: "music/tracks/library_items" }
+    ]
+    m.tabRing = m.top.findNode("tabRing")
+    ' The tab row speaks for itself (speakTabRow).
+    m.tabsGroup.muteAudioGuide = true
+    m.tabRowSpoken = ""
+    m.tabBoxes = []
+    x = 0
+    for each t in m.tabs
+        lbl = CreateObject("roSGNode", "Label")
+        lbl.text = t.label
+        lbl.font = "font:MediumBoldSystemFont"
+        lbl.translation = [x, 0]
+        m.tabsGroup.appendChild(lbl)
+        size = focusring.textSize(lbl)
+        m.tabBoxes.Push({ x: x, w: size.w, h: size.h })
+        x = x + size.w + TAB_SPACING
+    end for
+    ' The shown tab, and the tab row's cursor.
+    m.tabIndex = 0
+    m.tabCursor = 0
+    m.tabsFocused = false
+    m.favoritesOnly = false
+    ' Sort per tab ({ field, reverse }, see LibrarySort.bs), remembered in
+    ' the settings.
+    m.sorts = util.get(store.settings(), "librarySorts")
+    if not util.isAA(m.sorts) then m.sorts = {}
+    ' Library opens with focus on its tab row (it's reached from the nav
+    ' bar, like a second level of navigation).
+    m.inTabs = true
+    ' Where the tab row's cursor is: "tab" (m.tabCursor), "view", or "sort".
+    m.slot = "tab"
+    ' Grid or list per tab, remembered in the settings.
+    m.views = util.get(store.settings(), "libraryViews")
+    if not util.isAA(m.views) then m.views = {}
+    for each view in [m.grid, m.list]
+        view.ObserveField("itemSelected", "onSelected")
+        view.ObserveField("itemFocused", "onFocused")
+    end for
+    speakLists([m.grid, m.list])
+    m.listOpenEnded = {}
+    m.top.ObserveField("params", "onParams")
+    ' The ring shows only while the tab row has focus (Up to the nav bar
+    ' leaves the shown tab just blue).
+    m.top.ObserveField("focusedChild", "onFocusChange")
+    ' Down from the nav bar aims the tab row's cursor under the nav cursor.
+    m.top.ObserveField("aimX", "onAimX")
+end sub
+
+sub onParams()
+    wanted = util.str(util.get(m.top.params, "tab"), "")
+    for i = 0 to m.tabs.Count() - 1
+        if m.tabs[i].id = wanted then m.tabIndex = i
+    end for
+    m.tabCursor = m.tabIndex
+    loadTab()
+end sub
+
+sub onAimX()
+    x = m.top.aimX
+    if x < 0 or not m.inTabs then return
+    aimTabRowAt(x)
+    renderTabs()
+end sub
+
+sub onFocusChange()
+    focused = m.tabsGroup.hasFocus()
+    if focused = m.tabsFocused then return
+    m.tabsFocused = focused
+    renderTabs()
+end sub
+
+' "grid" or "list" for a tab: the stored choice, else Tracks as a list
+' and the others as grids.
+function viewFor(tabId as string) as string
+    v = util.str(util.get(m.views, tabId), "")
+    if v = "grid" or v = "list" then return v
+    if tabId = "tracks" then return "list"
+    return "grid"
+end function
+
+function currentSort() as object
+    tabId = m.tabs[m.tabIndex].id
+    return librarysort.valid(tabId, util.get(m.sorts, tabId))
+end function
+
+sub setSort(field as string, reverse as boolean)
+    tabId = m.tabs[m.tabIndex].id
+    m.sorts[tabId] = { field: field, reverse: reverse }
+    store.setSetting("librarySorts", m.sorts)
+    log.info("library", "sort", { tab: tabId, field: field, reverse: reverse })
+end sub
+
+function isListView() as boolean
+    return viewFor(m.tabs[m.tabIndex].id) = "list"
+end function
+
+function currentView() as object
+    if isListView() then return m.list
+    return m.grid
+end function
+
+' Flips the shown tab between grid and list, and remembers it.
+sub toggleView()
+    tabId = m.tabs[m.tabIndex].id
+    if viewFor(tabId) = "list" then m.views[tabId] = "grid" else m.views[tabId] = "list"
+    store.setSetting("libraryViews", m.views)
+    log.info("library", "view", { tab: tabId, view: m.views[tabId] })
+    loadTab()
+end sub
+
+sub loadTab()
+    apic.cancelAll()
+    tabDef = m.tabs[m.tabIndex]
+    m.content = CreateObject("roSGNode", "ContentNode")
+    m.offset = 0
+    m.exhausted = false
+    m.loading = false
+    m.grid.visible = not isListView()
+    m.list.visible = isListView()
+    m.listFade.visible = m.list.visible
+    view = currentView()
+    view.content = m.content
+    m.empty.visible = false
+    renderTabs()
+    if m.inTabs
+        m.focusTarget = m.tabsGroup
+    else
+        m.focusTarget = view
+        view.setFocus(true)
+    end if
+    loadMore()
+end sub
+
+' The tab row: the shown tab (m.tabIndex) is blue. While the row has
+' focus, the cursor is white inside the focus ring; Left and Right move it
+' along the tabs, then the view label, then the sort label. OK on a tab
+' shows it (like the nav bar), on View flips the shown tab between grid
+' and list, and on Sort (or * anywhere on the row) opens the options.
+sub renderTabs()
+    rowFocused = m.tabsGroup.hasFocus()
+    slot = ""
+    if rowFocused then slot = m.slot
+    if slot = "tab"
+        log.debug("library", "focus tab " + m.tabs[m.tabCursor].id)
+    else if slot <> ""
+        log.debug("library", "focus tab " + slot)
+    end if
+    for i = 0 to m.tabsGroup.getChildCount() - 1
+        lbl = m.tabsGroup.getChild(i)
+        ' The shown tab stays blue (selected) even under the cursor, where
+        ' it turns a stronger blue as the other tabs brighten to white.
+        cursor = i = m.tabCursor and slot = "tab"
+        if i = m.tabIndex and cursor
+            lbl.color = focusring.SELECTED_TEXT
+        else if i = m.tabIndex
+            lbl.color = focusring.SELECTED
+        else if cursor
+            lbl.color = focusring.TEXT
+        else
+            lbl.color = focusring.PLAIN_TEXT
+        end if
+    end for
+    s = currentSort()
+    text = "Sort: " + librarysort.describe(s.field, s.reverse)
+    if m.favoritesOnly then text = "Favorites only · " + text
+    m.filterLabel.text = text
+    if slot = "sort" then m.filterLabel.color = focusring.TEXT else m.filterLabel.color = focusring.PLAIN_TEXT
+    fsize = focusring.textSize(m.filterLabel)
+    fy = m.filterLabel.translation[1]
+    fx = FILTER_RIGHT - fsize.w
+    m.filterLabel.translation = [fx, fy]
+    if isListView() then m.viewLabel.text = "View: List" else m.viewLabel.text = "View: Grid"
+    if slot = "view" then m.viewLabel.color = focusring.TEXT else m.viewLabel.color = focusring.PLAIN_TEXT
+    vsize = focusring.textSize(m.viewLabel)
+    vx = fx - LABEL_GAP - vsize.w
+    m.viewLabel.translation = [vx, fy]
+    ' The ring marks the row's cursor while the row has focus.
+    if slot = "sort"
+        focusring.around(m.tabRing, fx, fy, fsize.w, fsize.h)
+    else if slot = "view"
+        focusring.around(m.tabRing, vx, fy, vsize.w, vsize.h)
+    else if slot = "tab" and m.tabCursor < m.tabBoxes.Count()
+        b = m.tabBoxes[m.tabCursor]
+        origin = m.tabsGroup.translation
+        focusring.around(m.tabRing, origin[0] + b.x, origin[1], b.w, b.h)
+    else
+        m.tabRing.visible = false
+    end if
+    ' Where Up to the nav bar should aim (the tab row is the top row).
+    if rowFocused then m.top.focusX = cursorCenterX() else m.top.focusX = -1
+    speakTabRow(slot)
+end sub
+
+' Says the tab row's cursor when it moves or the row gets focus (this
+' runs on every redraw, e.g. a page loading, so only a change is said):
+' "Albums, tab 2 of 4, shown", "View: Grid, button".
+sub speakTabRow(slot as string)
+    text = ""
+    if slot = "tab"
+        parts = [m.tabs[m.tabCursor].label, "tab " + speech.position(m.tabCursor, m.tabs.Count())]
+        if m.tabCursor = m.tabIndex then parts.Push("shown")
+        text = speech.join(parts)
+    else if slot = "view"
+        text = speech.join([m.viewLabel.text, "button"])
+    else if slot = "sort"
+        text = speech.join([m.filterLabel.text, "button"])
+    end if
+    if text <> "" and text <> m.tabRowSpoken then speech.say(text)
+    m.tabRowSpoken = text
+end sub
+
+sub loadMore()
+    if m.loading or m.exhausted then return
+    m.loading = true
+    tabDef = m.tabs[m.tabIndex]
+    s = currentSort()
+    order = librarysort.orderBy(s.field, s.reverse)
+    args = { limit: PAGE_SIZE, offset: m.offset, order_by: order }
+    if m.favoritesOnly then args.favorite = true
+    ' Later pages load behind items already shown; only an empty tab needs
+    ' the loading marker.
+    m.loadingIndicator.active = m.offset = 0
+    apic.call(tabDef.command, args, onPage, { tab: tabDef.id, order: order })
+end sub
+
+sub onPage(resp as object, ctx as object)
+    m.loading = false
+    if ctx.tab <> m.tabs[m.tabIndex].id then return
+    m.loadingIndicator.active = false
+    if not resp.ok and ctx.order <> "sort_name"
+        ' The sort keys are mirrored from MA's web UI; if this server
+        ' doesn't take one, fall back to names.
+        log.warn("library", "sort refused", { tab: ctx.tab, order: ctx.order, status: resp.status, error: resp.error })
+        actions.toast("Music Assistant can't sort that way here. Sorting by name.")
+        setSort("name", false)
+        loadTab()
+        return
+    end if
+    if not resp.ok or not util.isArray(resp.data)
+        showEmpty("Couldn't load your library.")
+        return
+    end if
+    items = resp.data
+    listView = isListView()
+    ' List rows show small covers (and a track's duration); grids show
+    ' posters.
+    imageSize = 256
+    if listView then imageSize = 80
+    for each item in items
+        n = itemNode(item, imageSize)
+        if listView and ma.mediaTypeOf(item) = "track" then n.ShortDescriptionLine2 = util.formatDuration(util.get(item, "duration", 0))
+        ' An artist's second line would only say "Artist" on every row;
+        ' without one, the name is centered in the row (TrackRow).
+        if listView and ma.mediaTypeOf(item) = "artist" then n.description = ""
+        if listView then speech.describeRow(n, util.get(item, "duration"))
+        m.content.appendChild(n)
+    end for
+    m.offset = m.offset + items.Count()
+    if items.Count() < PAGE_SIZE then m.exhausted = true
+    ' Until the last page, the screen reader can't say "of N".
+    m.listOpenEnded[m.grid.id] = not m.exhausted
+    m.listOpenEnded[m.list.id] = not m.exhausted
+    speakList(currentView(), true)
+    log.debug("library", "page", { tab: ctx.tab, got: items.Count(), total: m.offset })
+    if m.content.getChildCount() = 0
+        if m.favoritesOnly
+            showEmpty("No favorites here yet.")
+        else
+            showEmpty("Nothing in your library here yet.")
+        end if
+    end if
+end sub
+
+sub showEmpty(text as string)
+    m.empty.text = text
+    m.empty.visible = true
+end sub
+
+function itemAt(idx as integer) as dynamic
+    if m.content = invalid then return invalid
+    n = m.content.getChild(idx)
+    if n = invalid then return invalid
+    return n.item
+end function
+
+sub onFocused()
+    idx = currentView().itemFocused
+    m.top.focusedItem = itemAt(idx)
+    if idx >= m.content.getChildCount() - PREFETCH_MARGIN then loadMore()
+end sub
+
+sub onSelected()
+    item = itemAt(currentView().itemSelected)
+    if ma.mediaTypeOf(item) = "track"
+        actions.play(item, "play")
+    else
+        openItem(item)
+    end if
+end sub
+
+' --- library options (on the tab row) ---
+
+' The sort menu for the shown tab (widgets/OptionsMenu, which can relabel
+' while it shows; a StandardMessageDialog can't): the tab's fields, each
+' labeled as it would sort in the current direction ("Name (Z–A)" while
+' reversed), the current one blue (selected), then the "Reverse order"
+' and "Favorites only" switches, blue when on. Picking a field applies it and
+' closes the menu; the switches apply at once and keep it open, the list
+' re-sorting behind it and the labels following. Back closes it.
+sub showLibraryOptions()
+    log.debug("library", "options menu", { sort: currentSort(), favoritesOnly: m.favoritesOnly })
+    menu = CreateObject("roSGNode", "OptionsMenu")
+    menu.title = "Sort " + m.tabs[m.tabIndex].label
+    ' Size for both directions' labels, which Reverse switches between.
+    hints = []
+    for each id in librarysort.fieldsFor(m.tabs[m.tabIndex].id)
+        hints.Push(librarysort.describe(id, false))
+        hints.Push(librarysort.describe(id, true))
+    end for
+    menu.sizeHints = hints
+    menu.items = libraryOptionLabels()
+    menu.chosen = libraryOptionsChosen()
+    menu.ObserveField("selected", "onLibraryOption")
+    menu.ObserveField("closed", "closeLibraryOptions")
+    m.optionsMenu = menu
+    m.top.getScene().appendChild(menu)
+    menu.active = true
+end sub
+
+' Labels, then which are selected (blue): the current field, and the
+' switches that are on.
+function libraryOptionLabels() as object
+    s = currentSort()
+    labels = []
+    for each id in librarysort.fieldsFor(m.tabs[m.tabIndex].id)
+        labels.Push(librarysort.describe(id, s.reverse))
+    end for
+    labels.Push("Reverse order")
+    labels.Push("Favorites only")
+    return labels
+end function
+
+function libraryOptionsChosen() as object
+    s = currentSort()
+    chosen = []
+    for each id in librarysort.fieldsFor(m.tabs[m.tabIndex].id)
+        chosen.Push(id = s.field)
+    end for
+    chosen.Push(s.reverse)
+    chosen.Push(m.favoritesOnly)
+    return chosen
+end function
+
+sub closeLibraryOptions()
+    if m.optionsMenu = invalid then return
+    log.debug("library", "options menu closed", currentSort())
+    m.top.getScene().removeChild(m.optionsMenu)
+    m.optionsMenu = invalid
+    if m.focusTarget <> invalid then m.focusTarget.setFocus(true)
+end sub
+
+sub onLibraryOption(event as object)
+    idx = event.GetData()
+    fields = librarysort.fieldsFor(m.tabs[m.tabIndex].id)
+    s = currentSort()
+    if idx < fields.Count()
+        ' Keep the direction, so the field sorts as its label said.
+        setSort(fields[idx], s.reverse)
+        loadTab()
+        closeLibraryOptions()
+        return
+    else if idx = fields.Count()
+        setSort(s.field, not s.reverse)
+    else
+        m.favoritesOnly = not m.favoritesOnly
+        log.info("library", "favorites only", { on: m.favoritesOnly })
+    end if
+    m.optionsMenu.items = libraryOptionLabels()
+    m.optionsMenu.chosen = libraryOptionsChosen()
+    loadTab()
+end sub
+
+' Down from the tab row: into the shown tab's grid or list.
+sub leaveTabs()
+    ' Aim: in a grid, land on the top-row item under the cursor.
+    view = currentView()
+    if view.isSameNode(m.grid) and m.content <> invalid and m.content.getChildCount() > 0
+        col = gridColumnAt(cursorCenterX())
+        if col > m.content.getChildCount() - 1 then col = m.content.getChildCount() - 1
+        log.debug("library", "aim down", { x: cursorCenterX(), column: col })
+        m.grid.jumpToItem = col
+    end if
+    m.inTabs = false
+    m.slot = "tab"
+    m.focusTarget = view
+    m.focusTarget.setFocus(true)
+    renderTabs()
+end sub
+
+' --- aiming between the tab row and the grid ---
+' Up and Down between the two rows move to the item most directly above
+' or below, not to a remembered or fixed spot. The grid's geometry is in
+' LibraryScreen.xml.
+const GRID_X = 96
+const GRID_ITEM_W = 240
+const GRID_PITCH = 297
+const GRID_COLUMNS = 6
+
+' The tab row's slots with their horizontal centers on screen.
+function tabRowSlots() as object
+    slots = []
+    origin = m.tabsGroup.translation
+    for i = 0 to m.tabBoxes.Count() - 1
+        b = m.tabBoxes[i]
+        slots.Push({ slot: "tab", index: i, x: origin[0] + b.x + b.w / 2 })
+    end for
+    slots.Push({ slot: "view", index: -1, x: m.viewLabel.translation[0] + focusring.textSize(m.viewLabel).w / 2 })
+    slots.Push({ slot: "sort", index: -1, x: m.filterLabel.translation[0] + focusring.textSize(m.filterLabel).w / 2 })
+    return slots
+end function
+
+function cursorCenterX() as float
+    for each s in tabRowSlots()
+        if s.slot = m.slot and (s.slot <> "tab" or s.index = m.tabCursor) then return s.x
+    end for
+    return GRID_X
+end function
+
+function gridColumnAt(x as float) as integer
+    col = Int((x - GRID_X - GRID_ITEM_W / 2) / GRID_PITCH + 0.5)
+    if col < 0 then col = 0
+    if col > GRID_COLUMNS - 1 then col = GRID_COLUMNS - 1
+    return col
+end function
+
+' Puts the tab row's cursor on the slot nearest x.
+sub aimTabRowAt(x as float)
+    best = invalid
+    for each s in tabRowSlots()
+        if best = invalid or Abs(s.x - x) < Abs(best.x - x) then best = s
+    end for
+    m.slot = best.slot
+    if best.slot = "tab" then m.tabCursor = best.index
+    log.debug("library", "aim tab row", { x: x, slot: best.slot, tab: m.tabCursor })
+end sub
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    if m.inTabs and m.slot <> "tab"
+        ' On the view or sort label.
+        if key = "left"
+            if m.slot = "sort"
+                m.slot = "view"
+            else
+                ' Left of View is the last tab, however the cursor got to
+                ' View (aimed from the grid, it may not have passed it).
+                m.slot = "tab"
+                m.tabCursor = m.tabs.Count() - 1
+            end if
+            renderTabs()
+            return true
+        else if key = "right"
+            if m.slot = "sort"
+                ' The row wraps: right of Sort is the first tab.
+                m.slot = "tab"
+                m.tabCursor = 0
+            else
+                m.slot = "sort"
+            end if
+            renderTabs()
+            return true
+        else if key = "OK" and m.slot = "view"
+            toggleView()
+            return true
+        else if key = "OK"
+            showLibraryOptions()
+            return true
+        else if key = "down"
+            leaveTabs()
+            return true
+        end if
+        return false
+    end if
+    if m.inTabs
+        if key = "right" and m.tabCursor = m.tabs.Count() - 1
+            m.slot = "view"
+            renderTabs()
+            return true
+        end if
+        if key = "left" and m.tabCursor = 0
+            ' The row wraps: left of the first tab is Sort.
+            m.slot = "sort"
+            renderTabs()
+            return true
+        else if key = "left" and m.tabCursor > 0
+            m.tabCursor = m.tabCursor - 1
+            renderTabs()
+            return true
+        else if key = "right" and m.tabCursor < m.tabs.Count() - 1
+            m.tabCursor = m.tabCursor + 1
+            renderTabs()
+            return true
+        else if key = "OK"
+            ' Show the tab under the cursor; focus stays on the row. OK on
+            ' the tab already shown reloads it (e.g. to pick up new covers).
+            log.debug("library", "tab ok", { tab: m.tabs[m.tabCursor].id, reload: m.tabCursor = m.tabIndex })
+            m.tabIndex = m.tabCursor
+            loadTab()
+            return true
+        else if key = "down"
+            leaveTabs()
+            return true
+        end if
+        return key = "left" or key = "right"
+    end if
+    if key = "up"
+        ' The grid/list didn't consume Up, so we're on its first row. From
+        ' a grid, aim at the tab row slot above the focused column; from a
+        ' list (full-width rows), start on the shown tab.
+        m.inTabs = true
+        m.slot = "tab"
+        m.tabCursor = m.tabIndex
+        if currentView().isSameNode(m.grid)
+            col = m.grid.itemFocused mod GRID_COLUMNS
+            aimTabRowAt(GRID_X + col * GRID_PITCH + GRID_ITEM_W / 2)
+        end if
+        m.focusTarget = m.tabsGroup
+        m.tabsGroup.setFocus(true)
+        renderTabs()
+        return true
+    end if
+    return false
+end function

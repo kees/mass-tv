@@ -1,0 +1,49 @@
+import "pkg:/source/lib/Util.bs"
+
+' Reads (never verifies) MA's JWT claims, for token expiry warnings.
+namespace jwt
+
+    function claims(token as dynamic) as dynamic
+        if not util.isNonEmptyString(token) then return invalid
+        parts = token.Split(".")
+        if parts.Count() <> 3 then return invalid
+        payload = parts[1].Replace("-", "+").Replace("_", "/")
+        while (Len(payload) mod 4) <> 0
+            payload = payload + "="
+        end while
+        ba = CreateObject("roByteArray")
+        ba.FromBase64String(payload)
+        if ba.Count() = 0 then return invalid
+        parsed = ParseJson(ba.ToAsciiString())
+        if not util.isAA(parsed) then return invalid
+        return parsed
+    end function
+
+    ' Expiry in epoch seconds, or invalid.
+    function expiry(token as dynamic) as dynamic
+        c = jwt.claims(token)
+        if c = invalid then return invalid
+        exp = util.get(c, "exp")
+        if util.isNumber(exp) then return exp
+        return invalid
+    end function
+
+    ' The token's id (MA's jti claim, what auth/token/revoke takes), or "".
+    function tokenId(token as dynamic) as string
+        return util.str(util.get(jwt.claims(token), "jti"), "")
+    end function
+
+    ' True for MA's long-lived tokens (1 year, never renewed by MA).
+    function isLongLived(token as dynamic) as boolean
+        v = util.get(jwt.claims(token), "is_long_lived")
+        return (type(v) = "Boolean" or type(v) = "roBoolean") and v
+    end function
+
+    ' Days until expiry (negative if expired), or invalid if unknown.
+    function daysLeft(token as dynamic, nowSec as dynamic) as dynamic
+        exp = jwt.expiry(token)
+        if exp = invalid then return invalid
+        return Int((exp - nowSec) / 86400)
+    end function
+
+end namespace

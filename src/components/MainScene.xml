@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component name="MainScene" extends="Scene">
+    <interface>
+        <field id="launchArgs" type="assocarray" onChange="onLaunchArgs" />
+        <!-- Set to leave the app (Main's event loop watches it). -->
+        <field id="exitRequested" type="boolean" />
+    </interface>
+    <children>
+        <Rectangle id="background" color="#101418" width="1920" height="1080" />
+        <Group id="screens" />
+        <NavBar id="nav" visible="false" />
+        <NowPlayingBar id="npBar" translation="[0,976]" visible="false" />
+        <Toast id="toast" translation="[0,860]" />
+        <PlayerController id="player" />
+        <Timer id="pollTimer" repeat="true" duration="30" />
+        <Timer id="seekTimer" repeat="false" duration="0.35" />
+        <Timer id="seekClearTimer" repeat="false" duration="4" />
+        <Timer id="bootTimer" repeat="false" duration="0.05" />
+        <!-- One extra queue poll shortly after a track change or command,
+             once MA has updated its queue. -->
+        <Timer id="kickTimer" repeat="false" duration="1.2" />
+        <!-- While Music Assistant is unreachable, check back periodically. -->
+        <Timer id="reconnectTimer" repeat="true" duration="10" />
+        <!-- Checks once a day whether a profile's token needs renewing, for
+             when the app stays open for weeks. -->
+        <Timer id="renewTimer" repeat="true" duration="86400" />
+    </children>
+</component>

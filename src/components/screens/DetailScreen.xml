@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Album, playlist, artist, podcast, or audiobook page. params: { item }. -->
+<component name="DetailScreen" extends="BaseScreen">
+    <children>
+        <CoverArt id="art" translation="[96,24]" width="340" loadSize="512" boxColor="#232A33" placeholderUri="pkg:/images/placeholder_header.png" />
+        <Label id="kind" translation="[480,30]" width="1344" color="#5A8DEE" font="font:SmallBoldSystemFont" />
+        <Label id="title" translation="[480,64]" width="1344" height="80" color="#EEEEF6" font="font:LargeBoldSystemFont" wrap="false" />
+        <Label id="subtitle" translation="[480,134]" width="1344" color="#9A9FB0" font="font:MediumSystemFont" />
+        <Label id="info" translation="[480,184]" width="1344" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- The item's description (artists and albums that have one),
+             placed by layoutText in the subtitle and info lines' space
+             (the page's buttons start at y 260). -->
+        <Label id="about" translation="[480,134]" width="1344" color="#9A9FB0" font="font:SmallSystemFont" wrap="true" maxLines="3" lineSpacing="2" visible="false" />
+        <ButtonRow id="buttons" translation="[480,260]" minWidth="180" />
+        <MarkupList
+            id="tracks"
+            translation="[96,400]"
+            itemComponentName="TrackRow"
+            itemSize="[1728,70]"
+            itemSpacing="[0,4]"
+            numRows="6"
+            drawFocusFeedback="false"
+            vertFocusAnimationStyle="floatingFocus" />
+        <ListFade id="tracksFade" />
+        <RowList
+            id="rows"
+            translation="[96,400]"
+            itemComponentName="PosterCard"
+            itemSize="[1824,396]"
+            itemSpacing="[0,16]"
+            numRows="2"
+            rowItemSize="[[240,320]]"
+            rowItemSpacing="[[32,0]]"
+            showRowLabel="[true]"
+            rowLabelOffset="[[0,8]]"
+            rowLabelColor="#9A9FB0"
+            rowLabelFont="font:MediumBoldSystemFont"
+            drawFocusFeedback="false"
+            rowFocusAnimationStyle="floatingFocus"
+            vertFocusAnimationStyle="floatingFocus"
+            visible="false" />
+        <LoadingIndicator id="loadingIndicator" translation="[96,420]" />
+    </children>
+</component>

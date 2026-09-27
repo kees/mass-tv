@@ -1,0 +1,14 @@
+node_modules/
+build/
+out/
+upstream/
+*.zip
+.env
+logs/
+__pycache__/
+test-media/
+run/
+fonts/source/
+/src/images/
+/src/fonts/
+.venv/

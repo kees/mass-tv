@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Waiting for Music Assistant" marker for a screen area whose content
+     is on its way. Appears only after a short delay (fast replies don't
+     flash it) and says so when the reply is slow.
+
+     active   input; true from sending the request until its reply
+     text     label while waiting (default "Loading…") -->
+<component name="LoadingIndicator" extends="Group">
+    <interface>
+        <field id="active" type="boolean" value="false" onChange="onActive" />
+        <field id="text" type="string" value="Loading…" />
+    </interface>
+    <children>
+        <Group id="body" visible="false">
+            <BusySpinner id="spinner" />
+            <Label id="label" translation="[68,6]" width="1600" color="#9A9FB0" font="font:MediumSystemFont" />
+        </Group>
+        <Timer id="showTimer" repeat="false" duration="0.3" />
+        <Timer id="slowTimer" repeat="false" duration="8" />
+    </children>
+</component>

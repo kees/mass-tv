@@ -1,0 +1,78 @@
+import "pkg:/source/lib/Store.bs"
+import "pkg:/source/lib/Profiles.bs"
+import "pkg:/source/lib/Jwt.bs"
+
+sub init()
+    m.logTag = "profiles"
+    m.list = m.top.findNode("list")
+    m.hint = m.top.findNode("hint")
+    m.list.ObserveField("itemSelected", "onSelected")
+    m.list.ObserveField("itemFocused", "onFocused")
+    speakLists([m.list])
+    m.focusTarget = m.list
+    m.top.ObserveField("params", "onParams")
+end sub
+
+sub onParams()
+    m.profiles = store.profileList()
+    root = CreateObject("roSGNode", "ContentNode")
+    nowSec = CreateObject("roDateTime").AsSeconds()
+    ' With profiles on more than one server, each row says which.
+    many = profiles.manyServers(m.profiles)
+    for each p in m.profiles
+        n = root.CreateChild("ContentNode")
+        label = profiles.displayName(p)
+        if many then label = label + "  ·  " + profiles.serverLabel(p)
+        days = jwt.daysLeft(p.token, nowSec)
+        if days <> invalid and days < 0
+            label = label + "  (link expired)"
+        else if days <> invalid and days < 30
+            label = label + "  (link expires soon)"
+        end if
+        n.title = label
+    end for
+    add = root.CreateChild("ContentNode")
+    add.title = "+ Link a profile"
+    m.list.content = root
+    idx = profiles.initialIndex(m.profiles, store.lastProfile())
+    if idx >= 0 then m.list.jumpToItem = idx
+    m.hint.text = ""
+    if m.profiles.Count() > 0 and not many then m.hint.text = "Server: " + profiles.serverLabel(m.profiles[0])
+end sub
+
+' Up and Down wrap: the list passes Down on at its last row and Up at its
+' first.
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press or m.list.content = invalid then return false
+    if m.list.hasFocus() and key = "down"
+        m.list.jumpToItem = 0
+        return true
+    else if m.list.hasFocus() and key = "up"
+        m.list.jumpToItem = m.list.content.getChildCount() - 1
+        return true
+    end if
+    return false
+end function
+
+sub onFocused()
+    n = invalid
+    if m.list.content <> invalid then n = m.list.content.getChild(m.list.itemFocused)
+    if n <> invalid then log.debug("profiles", "focus", { index: m.list.itemFocused, title: n.title })
+end sub
+
+sub onSelected()
+    idx = m.list.itemSelected
+    if idx >= m.profiles.Count()
+        m.top.navigate = { screen: "setup", params: {}, root: true }
+        return
+    end if
+    p = m.profiles[idx]
+    days = jwt.daysLeft(p.token, CreateObject("roDateTime").AsSeconds())
+    if days <> invalid and days < 0
+        m.global.toast = "That link has expired. Link the profile again."
+        m.top.navigate = { screen: "setup", params: { server: util.str(util.get(p, "server"), "") }, root: true }
+        return
+    end if
+    log.info("profiles", "chosen", { user: p.username })
+    m.top.profileChosen = p
+end sub

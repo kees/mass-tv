@@ -1,0 +1,22 @@
+import "pkg:/source/lib/Speech.bs"
+
+sub init()
+    m.label = m.top.findNode("label")
+    m.timer = m.top.findNode("timer")
+    m.timer.ObserveField("fire", "onFire")
+    m.top.visible = false
+end sub
+
+sub onText()
+    if m.top.text = "" then return
+    m.label.text = m.top.text
+    m.top.visible = true
+    m.timer.control = "stop"
+    m.timer.control = "start"
+    ' Said after whatever is being said: it's news, not a move.
+    speech.say(m.top.text, false)
+end sub
+
+sub onFire()
+    m.top.visible = false
+end sub

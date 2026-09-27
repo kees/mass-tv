@@ -1,0 +1,63 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Mdns.bs"
+
+const MAX_PACKET = 9000
+
+sub init()
+    m.top.functionName = "runQuery"
+end sub
+
+sub runQuery()
+    m.logTag = "mdns"
+    req = m.top.request
+    name = util.str(util.get(req, "name"), "_services._dns-sd._udp.local")
+    qtype = mdns.typeCode(util.str(util.get(req, "type"), "PTR"))
+    seconds = util.get(req, "seconds", 3)
+    if not util.isNumber(seconds) then seconds = 3
+
+    port = CreateObject("roMessagePort")
+    sock = CreateObject("roDatagramSocket")
+    sock.setMessagePort(port)
+    ' Port 5353 belongs to the Roku's own responder; any other port makes
+    ' this a legacy unicast query, answered straight back to us.
+    here = CreateObject("roSocketAddress")
+    here.setPort(0)
+    bound = sock.setAddress(here)
+    dest = CreateObject("roSocketAddress")
+    dest.setAddress(util.str(util.get(req, "to"), mdns.GROUP))
+    sock.setSendToAddress(dest)
+    sock.setMulticastTTL(255)
+    sock.notifyReadable(true)
+    id = Rnd(65535)
+    packet = mdns.query(name, qtype, id)
+    sent = sock.send(packet, 0, packet.Count())
+    log.debug("mdns", "query sent", { name: name, type: mdns.typeName(qtype), id: id, bound: bound, local: sock.getAddress().getAddress(), sent: sent, status: sock.status() })
+    if sent <> packet.Count()
+        sock.close()
+        m.top.result = { ok: false, error: "send failed (status " + sock.status().ToStr() + ")", sent: sent, replies: [] }
+        return
+    end if
+
+    replies = []
+    clock = CreateObject("roTimespan")
+    while clock.TotalMilliseconds() < seconds * 1000
+        msg = Wait(250, port)
+        if type(msg) = "roSocketEvent" and sock.isReadable()
+            buf = CreateObject("roByteArray")
+            buf[MAX_PACKET - 1] = 0
+            n = sock.receive(buf, 0, MAX_PACKET)
+            from = sock.getReceivedFromAddress().getAddress()
+            parsed = invalid
+            if n > 0 then parsed = mdns.parse(buf, n)
+            if parsed = invalid
+                log.debug("mdns", "unparsable reply", { from: from, bytes: n })
+            else
+                log.debug("mdns", "reply", { from: from, bytes: n, id: parsed.id, records: parsed.records.Count() })
+                replies.Push({ from: from, records: parsed.records })
+            end if
+        end if
+    end while
+    sock.close()
+    m.top.result = { ok: true, error: "", sent: sent, replies: replies }
+end sub

@@ -1,0 +1,132 @@
+function pbMedia(item as string) as object
+    r = deeplink.parse({ u: "http://ma:8097/single/s1/ROKU_1/" + item + "/ROKU_1.flac", t: "a", songName: "Song " + item, duration: "200" }, [])
+    return r
+end function
+
+function pbEffects(fx as object) as string
+    names = []
+    for each e in fx
+        names.Push(e.do)
+    end for
+    return names.Join(",")
+end function
+
+sub playbackTests()
+    tst.begin("playback")
+    s = playback.initial()
+
+    ' Play, then the node reports playing.
+    r = playback.reduce(s, { type: "deeplink", result: pbMedia("q1") })
+    tst.eq(pbEffects(r.effects), "load,changed", "play loads")
+    tst.eq(r.state.status, "loading", "loading")
+    r = playback.reduce(r.state, { type: "node", nodeState: "playing" })
+    tst.eq(r.state.status, "playing", "playing")
+    tst.eq(playback.toggleEffect(r.state), "pause", "toggle pauses")
+
+    ' Pause and resume: the node's states drive the status, and a toggle
+    ' while paused resumes. (The e2e simulator's Video node reports no
+    ' states, so this is where pause/resume is tested off-device.)
+    p = playback.reduce(r.state, { type: "node", nodeState: "paused" })
+    tst.eq(p.state.status, "paused", "node paused -> paused")
+    tst.eq(pbEffects(p.effects), "changed", "pause publishes")
+    tst.eq(playback.toggleEffect(p.state), "resume", "toggle while paused resumes")
+    p = playback.reduce(p.state, { type: "node", nodeState: "buffering" })
+    tst.eq(p.state.status, "paused", "buffering while paused stays paused")
+    p = playback.reduce(p.state, { type: "node", nodeState: "playing" })
+    tst.eq(p.state.status, "playing", "node playing -> playing again")
+
+    ' Enqueue then finish: ask MA for the next track; MA answers with it.
+    enq = pbMedia("q2")
+    enq.action = "enqueue"
+    r = playback.reduce(r.state, { type: "deeplink", result: enq })
+    tst.eq(r.state.pending.title, "Song q2", "pending stored")
+    fin = playback.reduce(r.state, { type: "node", nodeState: "finished" })
+    tst.eq(pbEffects(fin.effects), "advance,armNextTimeout,changed", "finish asks MA for next")
+    tst.ok(fin.state.awaitingNext, "awaiting next")
+    tst.eq(fin.state.current.title, "Song q1", "still on the old track until MA answers")
+    r = playback.reduce(fin.state, { type: "deeplink", result: pbMedia("q2") })
+    tst.eq(r.state.current.title, "Song q2", "advanced by MA")
+    tst.ok(not r.state.awaitingNext, "no longer awaiting")
+    tst.eq(r.state.pending, invalid, "pending consumed")
+    late = playback.reduce(r.state, { type: "nextTimeout" })
+    tst.eq(pbEffects(late.effects), "", "late timeout ignored")
+
+    ' MA doesn't answer: fall back to the enqueued item.
+    fb = playback.reduce(fin.state, { type: "nextTimeout" })
+    tst.eq(pbEffects(fb.effects), "load,changed", "timeout plays pending")
+    tst.eq(fb.state.current.title, "Song q2", "fallback advanced")
+
+    ' Server seek we initiated: same item, new stream.
+    r = playback.reduce(r.state, { type: "seekSent", target: 90 })
+    again = deeplink.parse({ u: "http://ma:8097/single/s9/ROKU_1/q2/ROKU_1.flac", t: "a" }, [])
+    r = playback.reduce(r.state, { type: "deeplink", result: again })
+    tst.eq(r.state.offset, 90, "seek offset applied")
+    tst.eq(r.state.current.duration, 200, "full duration kept across a seek")
+    tst.eq(playback.displayPosition(r.state, 5), 95, "display position")
+    tst.eq(r.state.seekTarget, invalid, "seek target cleared")
+
+    ' Seek from elsewhere: needs a server sync.
+    r = playback.reduce(r.state, { type: "deeplink", result: again })
+    tst.eq(pbEffects(r.effects), "sync,load,changed", "external seek syncs")
+    tst.ok(r.state.needsSync, "needs sync")
+    r = playback.reduce(r.state, { type: "serverPos", elapsed: 120 })
+    tst.eq(r.state.offset, 120, "offset from server")
+    tst.ok(not r.state.needsSync, "synced")
+
+    ' New track resets the offset and drops a stale pending item.
+    r = playback.reduce(r.state, { type: "deeplink", result: enq })
+    r = playback.reduce(r.state, { type: "deeplink", result: pbMedia("q3") })
+    tst.eq(r.state.offset, 0, "offset reset")
+    tst.eq(r.state.pending, invalid, "stale pending dropped")
+
+    ' Error: one retry, then ask MA to advance.
+    r = playback.reduce(r.state, { type: "node", nodeState: "error", errorMsg: "404" })
+    tst.eq(pbEffects(r.effects), "retry,changed", "first error retries")
+    r = playback.reduce(r.state, { type: "node", nodeState: "error", errorMsg: "404" })
+    tst.eq(pbEffects(r.effects), "advance,changed", "second error advances")
+    tst.eq(r.state.status, "error", "error status")
+    tst.eq(r.state.lastError, "404", "error message")
+
+    ' Metadata-only update.
+    r = playback.reduce(r.state, { type: "deeplink", result: deeplink.parse({ t: "m", songName: "Live Title", artistName: "None" }, []) })
+    tst.eq(r.state.current.title, "Live Title", "meta title")
+    tst.eq(r.state.current.artist, "", "meta keeps artist when None")
+
+    ' Hold queue.
+    enq3 = pbMedia("q4")
+    enq3.action = "enqueue"
+    enq3.holdQueue = true
+    r = playback.reduce(r.state, { type: "deeplink", result: enq3 })
+    r = playback.reduce(r.state, { type: "node", nodeState: "finished" })
+    tst.eq(r.state.status, "idle", "held queue does not advance")
+    r = playback.reduce(r.state, { type: "deeplink", result: { action: "skipToQueued" } })
+    tst.eq(r.state.current.title, "Song q4", "skip to queued plays it")
+
+    ' Stop.
+    r = playback.reduce(r.state, { type: "deeplink", result: deeplink.parse({ u: " ", t: "a" }, []) })
+    tst.eq(pbEffects(r.effects), "stop,changed", "stop")
+    tst.eq(r.state.current, invalid, "cleared")
+    tst.eq(playback.toggleEffect(r.state), "", "nothing to toggle")
+end sub
+
+sub logTests()
+    tst.begin("log")
+    red = log.redact({ token: "abc", nested: { password: "p", ok: 1 }, list: [{ code: "x" }] }, 0)
+    tst.eq(red.token, "<redacted>", "token redacted")
+    tst.eq(red.nested.password, "<redacted>", "nested redacted")
+    tst.eq(red.nested.ok, 1, "other kept")
+    tst.eq(red.list[0].code, "<redacted>", "array element redacted")
+    red = log.redact({ masstv_token: "t", access_token: "a", user_password: "p", pairing_code: "c", codec: "flac", arl: "x" }, 0)
+    tst.eq(red.masstv_token, "<redacted>", "prefixed token redacted")
+    tst.eq(red.access_token, "<redacted>", "access_token redacted")
+    tst.eq(red.user_password, "<redacted>", "password variant redacted")
+    tst.eq(red.pairing_code, "<redacted>", "_code redacted")
+    tst.eq(red.arl, "<redacted>", "arl redacted")
+    tst.eq(red.codec, "flac", "codec is not a secret")
+    long = String(400, "a")
+    tst.eq(Len(log.redact(long, 0)), 300 + Len("<+100 chars>"), "long string truncated")
+    tst.eq(log.redactUrl("http://r:8888/cb/n?code=secret&x=1"), "http://r:8888/cb/n?code=<redacted>&x=1", "url redacted")
+    tst.eq(log.levelFromName("debug"), log.LEVEL_DEBUG, "level from name")
+    tst.eq(log.levelName(log.LEVEL_WARN), "WARN", "level name")
+    tst.eq(log.clockString(3723004), "01:02:03.004", "clock string")
+end sub

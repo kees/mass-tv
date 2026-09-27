@@ -1,0 +1,71 @@
+import "pkg:/source/lib/Util.bs"
+
+' Sort choices for Library's tabs. MA has no API listing the sort keys a
+' library listing accepts, so these mirror the web UI's lists per view
+' (frontend src/views/Library*.vue). Each field sorts in its natural
+' direction (names A–Z, dates newest first); "reverse" flips it.
+namespace librarysort
+
+    ' Field ids in menu order for a tab ("playlists", "albums", "artists",
+    ' "tracks").
+    function fieldsFor(tabId as string) as object
+        if tabId = "playlists" then return ["name", "added", "modified", "played", "plays"]
+        if tabId = "albums" then return ["name", "year", "albumArtist", "added", "played", "plays"]
+        if tabId = "artists" then return ["name", "added", "played", "plays"]
+        if tabId = "tracks" then return ["name", "trackArtist", "duration", "added", "played", "plays"]
+        return ["name"]
+    end function
+
+    ' { label, key (MA's ascending order_by), natural ("asc"/"desc"),
+    ' words: [natural direction, reversed] } for a field id.
+    function field(id as string) as object
+        defs = {
+            name: { label: "Name", key: "sort_name", natural: "asc", words: ["A–Z", "Z–A"] }
+            added: { label: "Date added", key: "timestamp_added", natural: "desc", words: ["newest", "oldest"] }
+            modified: { label: "Date changed", key: "timestamp_modified", natural: "desc", words: ["newest", "oldest"] }
+            played: { label: "Last played", key: "last_played", natural: "desc", words: ["recent", "longest ago"] }
+            plays: { label: "Play count", key: "play_count", natural: "desc", words: ["most", "fewest"] }
+            ' MA's Album.year: the release year (an integer, no date).
+            year: { label: "Release year", key: "year", natural: "desc", words: ["newest", "oldest"] }
+            albumArtist: { label: "Artist", key: "album_artist_name", natural: "asc", words: ["A–Z", "Z–A"] }
+            trackArtist: { label: "Artist", key: "track_artist_name", natural: "asc", words: ["A–Z", "Z–A"] }
+            duration: { label: "Length", key: "duration", natural: "asc", words: ["shortest", "longest"] }
+        }
+        f = defs[id]
+        if f = invalid then return defs.name
+        return f
+    end function
+
+    ' MA's order_by for a field, in its natural direction or reversed.
+    function orderBy(id as string, reverse as boolean) as string
+        f = librarysort.field(id)
+        desc = f.natural = "desc"
+        if reverse then desc = not desc
+        if desc then return f.key + "_desc"
+        return f.key
+    end function
+
+    ' Short text for the tab row, e.g. "Name (A–Z)" or "Date added (oldest)".
+    function describe(id as string, reverse as boolean) as string
+        f = librarysort.field(id)
+        word = f.words[0]
+        if reverse then word = f.words[1]
+        return f.label + " (" + word + ")"
+    end function
+
+    ' A stored { field, reverse } for a tab, or the default (name, A–Z)
+    ' when it's missing or not offered on that tab.
+    function valid(tabId as string, stored as dynamic) as object
+        out = { field: "name", reverse: false }
+        if not util.isAA(stored) then return out
+        id = util.str(util.get(stored, "field"), "")
+        for each f in librarysort.fieldsFor(tabId)
+            if f = id
+                out.field = id
+                out.reverse = util.get(stored, "reverse") = true
+            end if
+        end for
+        return out
+    end function
+
+end namespace
