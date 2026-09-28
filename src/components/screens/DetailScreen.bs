@@ -58,8 +58,16 @@ sub onParams()
     renderHeader()
     buildButtons()
     uri = ma.uriOf(m.item)
-    if uri <> "" then apic.call("music/item_by_uri", { uri: uri }, onFullItem)
-    loadChildren()
+    ' A discography's album that isn't in the library is a MusicBrainz
+    ' entry: MA finds it on one of the user's music services when it's
+    ' opened, and the page loads that album's tracks.
+    m.resolving = util.str(util.get(m.item, "provider"), "") = "musicbrainz"
+    if uri <> "" then apic.call("music/item_by_uri", { uri: uri }, onFullItem, invalid, { timeoutMs: 30000 })
+    if m.resolving
+        m.loadingIndicator.active = true
+    else
+        loadChildren()
+    end if
 end sub
 
 sub renderHeader()
@@ -256,10 +264,24 @@ sub toggleNewestFirst()
 end sub
 
 sub onFullItem(resp as object, ctx as dynamic)
-    if not resp.ok or not util.isAA(resp.data) then return
+    if not resp.ok or not util.isAA(resp.data)
+        if m.resolving
+            m.resolving = false
+            m.loadingIndicator.active = false
+            log.info("detail", "not on the user's services", { uri: ma.uriOf(m.item), error: resp.error })
+            m.infoText = "Not available on any of your music services."
+            layoutText()
+        end if
+        return
+    end if
     m.item = resp.data
     renderHeader()
     buildButtons()
+    if m.resolving
+        m.resolving = false
+        log.debug("detail", "resolved", { uri: ma.uriOf(m.item) })
+        loadChildren()
+    end if
 end sub
 
 sub loadChildren()
@@ -284,12 +306,19 @@ sub loadChildren()
         m.artistTracks = invalid
         ' Rows in this order, each shown only when it has something: the
         ' artist's albums, the albums it appears on (filled from its
-        ' tracks, below), its top tracks, similar artists.
-        for each spec in [["albums", "Albums", "music/artists/artist_albums"], ["appears", "Appears on", ""], ["top", "Top tracks", "music/artists/top_tracks"], ["similar", "Similar artists", "music/artists/similar_artists"]]
+        ' tracks, below), its discography (a library artist's; a service's
+        ' artist's Albums row already is its whole catalog), its top
+        ' tracks, similar artists.
+        for each spec in [["albums", "Albums", "music/artists/artist_albums"], ["appears", "Appears on", ""], ["discography", "Discography", ""], ["top", "Top tracks", "music/artists/top_tracks"], ["similar", "Similar artists", "music/artists/similar_artists"]]
             row = m.rowRoot.CreateChild("ContentNode")
             row.title = spec[1]
             if spec[0] = "appears"
                 m.appearsRow = row
+            else if spec[0] = "discography"
+                if prov = "library"
+                    m.artistPending = m.artistPending + 1
+                    apic.call("music/artists/discography", args, onDiscography, { row: row }, opts)
+                end if
             else
                 a = util.copyAA(args)
                 if spec[0] = "similar" then a.limit = 25
@@ -384,6 +413,24 @@ sub onArtistRow(resp as object, ctx as object)
         m.empty.text = "Music Assistant has no top tracks, albums, or similar artists for " + ma.titleOf(m.item) + "."
         m.empty.visible = true
     end if
+end sub
+
+' The Discography row: MA's discography of the artist (MusicBrainz's, with
+' the library's own albums in place; MA 2.11 on). An older MA, or none
+' found, falls back to the whole catalog of one of the user's own
+' streaming services the artist is linked to (its albums there).
+sub onDiscography(resp as object, ctx as object)
+    if resp.ok and util.isArray(resp.data) and resp.data.Count() > 0
+        onArtistRow(resp, { row: ctx.row, kind: "discography" })
+        return
+    end if
+    src = ma.discographySource(m.item, m.global.musicSources)
+    log.debug("detail", "discography", { fromMa: resp.ok, via: src })
+    if src = invalid
+        onArtistRow({ ok: false }, { row: ctx.row, kind: "discography" })
+        return
+    end if
+    apic.call("music/artists/artist_albums", { item_id: src.item_id, provider_instance_id_or_domain: src.provider_instance }, onArtistRow, { row: ctx.row, kind: "discography" }, { timeoutMs: 30000 })
 end sub
 
 ' The albums a library artist appears on without being their album artist

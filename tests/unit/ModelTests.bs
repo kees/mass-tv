@@ -138,6 +138,19 @@ sub maApiTests()
     tst.eq(ma.appearsOnAlbums(invalid, own), [], "no tracks")
     tst.eq(ma.appearsOnAlbums(tracks, invalid).Count(), 3, "no own albums: every album")
 
+    ' Where a library artist's whole catalog comes from without MA's
+    ' discography: the user's own streaming link.
+    visible = { "filesystem_local--a": "Local disk", "example_music--mine": "Example Music" }
+    artist = { provider_mappings: [
+        { provider_instance: "filesystem_local--a", provider_domain: "filesystem_local", item_id: "7" }
+        { provider_instance: "example_music--theirs", provider_domain: "example_music", item_id: "123" }
+        { provider_instance: "example_music--mine", provider_domain: "example_music", item_id: "123" }
+    ] }
+    tst.eq(ma.discographySource(artist, visible), { item_id: "123", provider_instance: "example_music--mine" }, "the user's own streaming link, not another member's or local files")
+    tst.eq(ma.discographySource({ provider_mappings: [artist.provider_mappings[0]] }, visible), invalid, "local files only: none")
+    tst.eq(ma.discographySource({ provider_mappings: [{ provider_instance: "example_music--mine", provider_domain: "example_music", item_id: "5", available: false }] }, visible), invalid, "an unavailable link: none")
+    tst.eq(ma.discographySource(artist, invalid), invalid, "no sources known yet: none")
+
     ' Where an item comes from.
     names = ma.sourceNames([{ instance_id: "example_music--AbC", name: "Example Music", type: "music" }, { instance_id: "filesystem_local--x1", name: "Filesystem (local disk) [music]" }, { name: "no id" }])
     tst.eq(names, { "example_music--AbC": "Example Music", "filesystem_local--x1": "Filesystem (local disk) [music]" }, "source names by instance")

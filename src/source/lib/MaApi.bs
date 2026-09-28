@@ -266,6 +266,28 @@ namespace ma
         return true
     end function
 
+    ' Where to read a library artist's whole catalog when MA has no
+    ' discography for it: { item_id, provider_instance } of the artist's
+    ' first available link to a streaming service the user can see
+    ' (visible: instance id -> name, the providers MA lists for this
+    ' profile), or invalid. Local-file sources ("filesystem_*") are left
+    ' out: their albums are the library's own. Only the user's own
+    ' instance: another member's account on the same service would be
+    ' read (and played) as that member.
+    function discographySource(artist as dynamic, visible as dynamic) as dynamic
+        maps = util.get(artist, "provider_mappings")
+        if not util.isArray(maps) or not util.isAA(visible) then return invalid
+        for each pm in maps
+            inst = util.str(util.get(pm, "provider_instance"), "")
+            domain = util.str(util.get(pm, "provider_domain"), "")
+            id = util.str(util.get(pm, "item_id"), "")
+            if inst <> "" and id <> "" and visible.DoesExist(inst) and not util.startsWith(domain, "filesystem") and util.get(pm, "available", true) <> false
+                return { item_id: id, provider_instance: inst }
+            end if
+        end for
+        return invalid
+    end function
+
     ' The albums an artist appears on without being their album artist
     ' (compilations): the albums of the artist's library tracks, each once,
     ' in the tracks' order, leaving out the artist's own albums (ownAlbums,

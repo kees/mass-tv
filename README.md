@@ -21,6 +21,33 @@ Assistant) can play there.
 - A bundled font for Chinese, Japanese, Korean, and emoji in titles and
   names, which Roku's own font can't show.
 
+<table>
+<tr>
+<td><img src="docs/screenshots/albums.jpg" alt="Library: albums in a grid, with letters to jump to"></td>
+<td><img src="docs/screenshots/artist.jpg" alt="An artist's page, with a photo, a biography, and albums"></td>
+</tr>
+<tr>
+<td align="center">Library: albums, with letters to jump to</td>
+<td align="center">An artist's page while music plays</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/now-playing.jpg" alt="Now Playing: cover, track, progress, and controls"></td>
+<td><img src="docs/screenshots/album.jpg" alt="An album's page, with its tracks"></td>
+</tr>
+<tr>
+<td align="center">Now Playing</td>
+<td align="center">An album's page</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/lyrics.jpg" alt="Synchronized lyrics, with the current line highlighted"></td>
+<td><img src="docs/screenshots/search.jpg" alt="Search results: artists and albums"></td>
+</tr>
+<tr>
+<td align="center">Synchronized lyrics</td>
+<td align="center">Search</td>
+</tr>
+</table>
+
 Mass TV is an independent project. It is not made by, affiliated with,
 or endorsed by Music Assistant, the Open Home Foundation, or Roku.
 
@@ -97,6 +124,42 @@ Noto Emoji, Noto Sans Arabic, and Noto Sans Hebrew, and like them is
 under the SIL Open Font License 1.1
 (`fonts/OFL-*.txt`). The logo's lettering is drawn in Roboto, also under
 the SIL Open Font License (`fonts/OFL-Roboto.txt`).
+
+The screenshots (`docs/screenshots/`) show music, album art, and a
+photo used under their own licenses, not Mass TV's:
+
+- Kimiko Ishizaka, "The Open Goldberg Variations" (recording
+  [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/), cover
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)),
+  <https://opengoldbergvariations.org/>
+- Photo of Kimiko Ishizaka: "Kimiko Douglass-Ishizaka" by Robert
+  Douglass,
+  [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/), via
+  [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Kimiko_Douglass-Ishizaka.JPG),
+  shown cropped
+- Josh Woodward, "Ashes", "Breadcrumbs", "Crawford Street", "Dirty
+  Wings", "Here Today", "The Simple Life", and "Sunny Side of the
+  Street" (music
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); cover art
+  by Josh Woodward,
+  [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) or
+  [CC BY 3.0 US](https://creativecommons.org/licenses/by/3.0/us/), via
+  Wikimedia Commons; the Ashes cover is also shown blurred behind Now
+  Playing), <https://www.joshwoodward.com/>
+- zero-project, "Earth", "Fairytale", and "Infinity"
+  ([CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/))
+- To Leave A Trace, "Fight Your Evil Side"
+  ([CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/))
+- Brent Hugh, "Fantastic Rhapsodies"
+  ([CC BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/))
+- Stellardrone, "Echoes"
+  ([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/))
+- Broke For Free, "Directionless EP"
+  ([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)), Free
+  Music Archive
+
+The artist and album descriptions and the lyrics in the screenshots
+were written for them.
 
 ## Support
 

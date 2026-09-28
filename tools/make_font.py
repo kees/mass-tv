@@ -238,10 +238,10 @@ def check_sources():
             sys.exit("%s missing or changed: run `make_font.py fetch`" % name)
 
 
-def subset(font, unicodes):
+def subset(font, unicodes, features):
     from fontTools import subset as ftsubset
     opts = ftsubset.Options()
-    opts.layout_features = ["kern", "liga", "ccmp"]
+    opts.layout_features = features
     opts.drop_tables += ["BASE", "DSIG", "vhea", "vmtx", "VORG", "VVAR", "STAT", "gasp"]
     opts.name_IDs = ["*"]
     opts.notdef_outline = True
@@ -257,7 +257,12 @@ def source_part(name, unicodes, location, upem):
     from fontTools.ttLib.scaleUpem import scale_upem
     from fontTools.varLib import instancer
     font = TTFont(os.path.join(SOURCE_DIR, name))
-    subset(font, unicodes)
+    # Roku applies a font's ccmp. Noto Sans Arabic's splits letters into a
+    # base and mark glyphs (the hamza of U+0623, the dots of U+062A) that
+    # only its mark feature places, which isn't kept; the presentation
+    # forms Bidi.bs draws need no composing.
+    features = ["kern", "liga"] if name == ARABIC_FONT else ["kern", "liga", "ccmp"]
+    subset(font, unicodes, features)
     axes = {a.axisTag for a in font["fvar"].axes}
     font = instancer.instantiateVariableFont(font, {k: v for k, v in location.items() if k in axes})
     if font["head"].unitsPerEm != upem:
