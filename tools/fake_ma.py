@@ -26,7 +26,8 @@ Test hooks (plain HTTP, not part of MA):
     GET  /_fake/token?user=testuser   mint a long-lived token for a fake user
                                   (&days=N: expiring in N days, default 365)
     POST /_fake/play?uri=...      act like someone pressed play in MA's UI
-    GET  /_fake/state             the fake queue state and revoked token ids
+    GET  /_fake/state             the fake queue state, revoked token ids, and
+                                  items removed from recently played
 """
 
 import argparse
@@ -187,10 +188,23 @@ class Queue:
                 "media_item": t, "image": t["album"]["image"], "index": i}
 
     def as_dict(self):
+        # The next track is handed to the Roku with the current one (send_current).
+        buffered = min(self.index + 1, len(self.items) - 1) if self.items else None
         return {"queue_id": PLAYER_ID, "state": self.state, "current_index": self.index, "items": len(self.items),
+                "index_in_buffer": buffered,
                 "shuffle_enabled": self.shuffle, "repeat_mode": self.repeat, "elapsed_time": self.elapsed,
                 "elapsed_time_last_updated": self.anchor, "playback_speed": 1.0,
-                "current_item": self.queue_item(self.index), "next_item": self.queue_item(self.index + 1)}
+                "current_item": self.streamed_item(self.index), "next_item": self.queue_item(self.index + 1)}
+
+    def streamed_item(self, i):
+        # MA fills in stream details for the item it streams: the source's
+        # format (a streaming service's FLAC 16/44.1).
+        qi = self.queue_item(i)
+        if qi is not None:
+            qi["streamdetails"] = {"provider": PROVIDER, "item_id": qi["media_item"]["item_id"],
+                                   "audio_format": {"content_type": "flac", "codec_type": "flac", "sample_rate": 44100,
+                                                    "bit_depth": 16, "channels": 2, "bit_rate": None}}
+        return qi
 
 
 CODEC_EXT = {"flac-44k": "flac", "flac-48k": "flac", "flac-96k24": "flac", "mp3": "mp3", "aac": "aac"}
@@ -208,6 +222,7 @@ class FakeMA:
         self.api_delay = 0.0
         self.tokens = {}
         self.revoked = []  # token ids revoked via auth/token/revoke
+        self.unplayed = []  # (provider, item_id, media_type) removed via music/mark_unplayed
         self.queue = Queue()
         self.lock = threading.RLock()
         self.log = []
@@ -293,18 +308,21 @@ class FakeMA:
         tracks = self.resolve_tracks(args.get("media"))
         if not tracks:
             raise KeyError("media not found")
+        q = self.queue
+        start_item = args.get("start_item")
+        if start_item:
+            # As MA does: the collection from start_item on, the tracks
+            # before it dropped (moved behind the rest when shuffle is on).
+            at = next((i for i, t in enumerate(tracks) if start_item in (t["uri"], t["item_id"])), None)
+            if at is None:
+                raise KeyError("start_item not found")
+            tracks = tracks[at:] + (tracks[:at] if q.shuffle else [])
         option = args.get("option", "play")
         items = [{"qid": uuid.uuid4().hex[:12], "track": t} for t in tracks]
-        q = self.queue
         q.user = user
         if option in ("replace", "play") or not q.items:
-            start = 0
-            if args.get("start_item"):
-                for i, it in enumerate(items):
-                    if it["track"]["uri"] == args["start_item"]:
-                        start = i
             q.items = items
-            q.index = start
+            q.index = 0
             q.session = uuid.uuid4().hex[:8]
             self.send_current()
         elif option == "next":
@@ -336,7 +354,14 @@ class FakeMA:
                     {"player_id": PLAYER_ID, "provider": "roku_media_assistant", "name": "Living Room", "available": True,
                      "device_info": {"identifiers": {"ip_address": self.roku}}}]
         if cmd == "music/recently_played_items":
-            return [ALBUMS["al2"], TRACKS[0], PLAYLISTS["pl1"]]
+            played = [ALBUMS["al2"], TRACKS[0], PLAYLISTS["pl1"]]
+            return [i for i in played
+                    if (i["provider"], i["item_id"], i["media_type"]) not in self.unplayed][:args.get("limit", 10)]
+        if cmd == "music/mark_unplayed":
+            # MA deletes the play log rows of the identity it's given.
+            mi = args.get("media_item") or {}
+            self.unplayed.append((mi.get("provider"), mi.get("item_id"), mi.get("media_type")))
+            return None
         if cmd == "music/recommendations":
             return [{"item_id": "made_for_you", "provider": PROVIDER, "name": "Made for you", "media_type": "folder", "items": []},
                     {"item_id": "top", "provider": PROVIDER, "name": "Top albums", "media_type": "folder", "items": []},
@@ -444,6 +469,13 @@ class FakeMA:
             q.anchor = time.time()
             return None
         if cmd == "player_queues/play_pause" or cmd == "player_queues/play" or cmd == "player_queues/pause":
+            # As MA does: an idle queue starts again with a new stream (none
+            # when it's empty); pause and resume are the Roku's Play key.
+            if q.state == "idle":
+                if cmd != "player_queues/pause" and q.items:
+                    q.session = uuid.uuid4().hex[:8]
+                    self.send_current()
+                return None
             self.ecp("keypress/Play")
             q.state = "paused" if q.state == "playing" else "playing"
             return None
@@ -458,6 +490,23 @@ class FakeMA:
             q.repeat = args.get("repeat_mode", "off")
             return None
         if cmd in ("player_queues/move_item", "player_queues/delete_item"):
+            key = args.get("queue_item_id") or args.get("item_id_or_index")
+            i = next((n for n, it in enumerate(q.items) if it["qid"] == key), None)
+            if i is None:
+                raise KeyError("Item %s not found in queue" % key)
+            # As MA: nothing up to what the Roku already has moves or goes.
+            if i <= min(q.index + 1, len(q.items) - 1):
+                if cmd == "player_queues/move_item":
+                    raise IndexError("%d is already played/buffered" % i)
+                return None
+            item = q.items.pop(i)
+            if cmd == "player_queues/move_item":
+                q.items.insert(min(q.index + 2, len(q.items)), item)
+            return None
+        if cmd == "player_queues/clear":
+            q.items = []
+            q.index = 0
+            q.state = "idle"
             return None
         raise LookupError("Invalid Command: " + cmd)
 
@@ -610,7 +659,7 @@ def make_handler(fake):
             if u.path == "/_fake/state":
                 with fake.lock:
                     return self.send(200, json.dumps({"queue": fake.queue.as_dict(), "ecp": fake.log[-20:],
-                                                      "revoked": fake.revoked}))
+                                                      "revoked": fake.revoked, "unplayed": fake.unplayed}))
             return self.send(404, "not found", "text/plain")
 
         def do_POST(self):

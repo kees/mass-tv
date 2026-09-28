@@ -8,13 +8,15 @@
 <component name="LyricsScreen" extends="BaseScreen">
     <children>
         <CoverArt id="bgArt" width="1920" height="1080" translation="[0,-96]" loadSize="80" opacity="0.12" placeholderUri="pkg:/images/placeholder_nowplaying.png" />
-        <!-- Centered above the lines, with whether they're timed beside
-             them and how to move through them ("synchronized (Up/Down to
-             scroll, OK to seek)", "no timing info (Up/Down to scroll)");
-             the playing bar below
-             already says what's playing. layoutHeader places the pair. -->
-        <Label id="kind" height="110" vertAlign="center" text="LYRICS" color="#5A8DEE" font="font:SmallBoldSystemFont" />
-        <Label id="kindNote" height="110" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- The header, in the 110 px above the lines: LYRICS centered with
+             whether they're timed beside it ("synchronized", "no timing
+             info"; setHeaderNote places the pair), and under them the key
+             hint in the standard hint style ("Up/Down: scroll · OK: play
+             from that line"). The playing bar below already says what's
+             playing. -->
+        <Label id="kind" height="76" vertAlign="center" text="LYRICS" color="#5A8DEE" font="font:SmallBoldSystemFont" />
+        <Label id="kindNote" height="76" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+        <Label id="keys" translation="[0,70]" width="1920" height="34" horizAlign="center" vertAlign="center" color="#5A6270" font="font:SmallestSystemFont" />
         <!-- The lines, in a window between the header and the playing bar;
              LyricsScreen.bs moves `scroller` to keep the line in view. -->
         <Group id="clip" clippingRect="[0,110,1920,760]">
@@ -26,7 +28,7 @@
              view is. -->
         <ScrollIndicator id="scrollbar" translation="[1848,110]" height="760" window="760" />
         <Label id="message" translation="[96,420]" width="1728" horizAlign="center" color="#9A9FB0" font="font:MediumSystemFont" visible="false" />
-        <LoadingIndicator id="loadingIndicator" translation="[96,420]" />
+        <LoadingIndicator id="loadingIndicator" translation="[96,420]" centerIn="1728" />
         <Animation id="scroll" duration="0.3" easeFunction="outQuad">
             <Vector2DFieldInterpolator id="scrollTo" key="[0.0, 1.0]" fieldToInterp="scroller.translation" />
         </Animation>

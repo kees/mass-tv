@@ -13,14 +13,16 @@ font draws was measured on a Roku with `tools/glyph_probe.py`: Latin-1,
 most of Latin Extended-A, basic Greek and Cyrillic, common punctuation,
 and a few symbols (arrows, ✓, ♪, ★), the same in regular and bold. It
 has no Vietnamese, Hebrew, Arabic, Indic, or other scripts; the bundled
-font adds Vietnamese, the rest of Latin, Greek, and Cyrillic, Arabic,
-and Hebrew, but not Indic or the other scripts. The ranges are `drawnRanges` in
+font adds Vietnamese, the rest of Latin (with IPA for pronunciations),
+Greek, and Cyrillic, Arabic, and Hebrew, symbols (℗, ⅓, ✦, ☾), the
+"fancy text" letters of titles and names (𝐁𝐨𝐥𝐝, 𝓢𝓬𝓻𝓲𝓹𝓽), and musical
+symbols (𝄞), but not Indic or the other scripts. The ranges are `drawnRanges` in
 `src/source/lib/Fonts.bs`; to measure again (e.g. on a new Roku OS), run
 a debug build and `ROKU=<name> .venv/bin/python tools/glyph_probe.py`
 (`--bold`, `--start`, `--end` in hex).
 
 `src/fonts/MassTVText-Regular.ttf` is built by `tools/make_font.py` from
-five sources pinned in `sources.txt`. Only the regular weight ships: the app emulates
+nine sources pinned in `sources.txt`. Only the regular weight ships: the app emulates
 bold by drawing a bold label twice, a little apart
 (`src/components/widgets/BoldTwin`), which halves the size; the tool can
 build a real bold too (`WEIGHTS`).
@@ -28,10 +30,13 @@ build a real bold too (`WEIGHTS`).
 | Source | Gives | License |
 |---|---|---|
 | Noto Sans CJK JP 2.004 (TrueType variable) | kana, Hangul, Han, CJK punctuation, symbols | `OFL-NotoSansCJK.txt` |
-| Noto Sans (google/fonts) | Latin with its extensions, Greek, Cyrillic, punctuation | `OFL-NotoSans.txt` |
+| Noto Sans (google/fonts) | Latin with its extensions and IPA, Greek, Cyrillic, punctuation, letterlike symbols and number forms | `OFL-NotoSans.txt` |
 | Noto Emoji, monochrome (google/fonts) | emoji | `OFL-NotoEmoji.txt` |
 | Noto Sans Arabic (google/fonts) | Arabic script: the Arabic block, Persian and Urdu letters, and the presentation forms | `OFL-NotoSansArabic.txt` |
 | Noto Sans Hebrew (google/fonts) | Hebrew: the Hebrew block and its presentation forms | `OFL-NotoSansHebrew.txt` |
+| Noto Sans Math (google/fonts) | Mathematical Alphanumeric Symbols, the "fancy text" letters and digits | `OFL-NotoSansMath.txt` |
+| Noto Sans Symbols and Symbols 2 (google/fonts) | symbols no source above has (☾, ✦, ✧, technical and astrological signs) | `OFL-NotoSansSymbols.txt`, `OFL-NotoSansSymbols2.txt` |
+| Noto Music (google/fonts) | musical symbols | `OFL-NotoMusic.txt` |
 
 Roku's renderer draws each character as one glyph, left to right: it
 doesn't join Arabic letters or order right-to-left text. So the font

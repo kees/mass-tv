@@ -14,7 +14,11 @@
                      aims there), or -1
        aimX          input; set by MainScene before restoreFocus when coming
                      Down from the nav bar: the nav cursor's center, for a
-                     screen that aims its top row (Library) -->
+                     screen that aims its top row (Library)
+       keyHint       output; what the keys do where the focus is ("OK: ...
+                     · Play/Pause: ..."), shown by MainScene at the bottom
+                     while the Now Playing bar is hidden; "" for none -->
+
 
 <component name="BaseScreen" extends="Group">
     <interface>
@@ -24,8 +28,9 @@
         <field id="restoreFocus" type="boolean" alwaysNotify="true" onChange="onRestoreFocus" />
         <field id="focusedItem" type="assocarray" onChange="onFocusedItem" />
         <field id="focusedPlay" type="assocarray" />
-        <field id="closing" type="boolean" alwaysNotify="true" onChange="dropMenu" />
+        <field id="closing" type="boolean" alwaysNotify="true" onChange="releaseScreen" />
         <field id="focusX" type="float" value="-1" />
         <field id="aimX" type="float" value="-1" alwaysNotify="true" />
+        <field id="keyHint" type="string" />
     </interface>
 </component>

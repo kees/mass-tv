@@ -16,6 +16,8 @@ import "pkg:/source/lib/DeepLink.bs"
 '   retries:    local retries used for the current media
 '   needsSync:  true when the offset must come from the server queue
 '   awaitingNext: a track ended and we asked MA for the next one
+'   ended:      the queue ran out: the last track finished with nothing
+'               enqueued (status "idle", current kept for Now Playing)
 '
 ' Track changes: when a track ends, we ask MA for the next track rather
 ' than playing the enqueued item ourselves. MA's Roku provider can only
@@ -50,6 +52,7 @@ namespace playback
             retries: 0
             needsSync: false
             awaitingNext: false
+            ended: false
             lastError: ""
         }
     end function
@@ -79,6 +82,7 @@ namespace playback
                     playback.startMedia(s, nextMedia, fx)
                 else
                     s.status = "idle"
+                    s.ended = s.current <> invalid
                     fx.Push({ do: "changed" })
                 end if
             end if
@@ -96,6 +100,7 @@ namespace playback
             fx.Push({ do: "changed" })
         else if action = "stop"
             s.status = "stopped"
+            s.ended = false
             s.current = invalid
             s.pending = invalid
             s.seekTarget = invalid
@@ -156,6 +161,7 @@ namespace playback
         end if
         s.seekTarget = invalid
         s.awaitingNext = false
+        s.ended = false
         s.current = media
         s.retries = 0
         s.status = "loading"
@@ -192,6 +198,7 @@ namespace playback
                 fx.Push({ do: "changed" })
             else
                 s.status = "idle"
+                s.ended = s.current <> invalid
                 fx.Push({ do: "changed" })
             end if
         else if ns = "error"

@@ -26,6 +26,7 @@ end sub
 sub onShow()
     if not m.top.active then return
     m.label.text = m.top.text
+    place()
     m.body.visible = true
     m.spinner.control = "start"
 end sub
@@ -33,4 +34,17 @@ end sub
 sub onSlow()
     if not m.top.active then return
     m.label.text = "Still waiting for Music Assistant…"
+    place()
+end sub
+
+' Centered in centerIn: the label sized to its text (a fixed width is
+' what boundingRect would report), spinner and text moved together.
+sub place()
+    w = m.top.centerIn
+    if w <= 0 then return
+    m.label.width = 0
+    textW = m.label.boundingRect().width
+    x = Int((w - m.label.translation[0] - textW) / 2)
+    if x < 0 then x = 0
+    m.body.translation = [x, 0]
 end sub

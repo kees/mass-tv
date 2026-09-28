@@ -7,21 +7,27 @@ import "pkg:/source/lib/Jwt.bs"
 const SUPPORT_SITE = "github.com/kees/mass-tv"
 const LEGAL_SITE = "saturnianpress.com/mass-tv"
 
+' The tabs, in order.
+const TAB_PROFILE = 0
+const TAB_TV = 1
+
 sub init()
     m.logTag = "settings"
-    m.profileRows = m.top.findNode("profileRows")
-    m.tvRows = m.top.findNode("tvRows")
+    m.tabs = m.top.findNode("tabs")
+    m.rows = m.top.findNode("rows")
     m.detail = m.top.findNode("detail")
     m.top.findNode("about").text = aboutText()
     m.top.findNode("device").text = deviceText()
-    for each list in [m.profileRows, m.tvRows]
-        list.ObserveField("itemSelected", "onSelected")
-        list.ObserveField("itemFocused", "onFocused")
-    end for
-    speakLists([m.profileRows, m.tvRows])
-    m.focusTarget = m.profileRows
-    m.profileEntries = []
-    m.tvEntries = []
+    m.tabs.tabs = ["Profile", "This TV"]
+    m.tabs.ObserveField("selected", "onTab")
+    m.rows.ObserveField("itemSelected", "onSelected")
+    m.rows.ObserveField("itemFocused", "onFocused")
+    speakLists([m.rows])
+    ' The description at the right follows the focus: a row's, or the
+    ' tab's while the tabs have it.
+    onFocusMoves([m.tabs, m.rows], "onFocused")
+    m.focusTarget = m.rows
+    m.entries = []
     m.top.ObserveField("params", "onParams")
 end sub
 
@@ -41,87 +47,114 @@ sub onSession()
     if pid <> util.str(m.shownPlayerId, "") and util.isAA(s) and s.Count() > 0 then build()
 end sub
 
-' Rebuilds both lists (labels show current values), keeping focus where
-' it was.
+' Rebuilds the shown tab's rows (labels show current values), keeping
+' the cursor's row.
 sub build()
+    if m.tabs.shown = TAB_TV
+        m.entries = tvEntries()
+    else
+        m.entries = profileEntries()
+    end if
+    fill(m.rows, m.entries)
+    onFocused()
+    ' A row's label that changed under the cursor (a switch) is said.
+    speakList(m.rows)
+end sub
+
+' The profile's rows: switching and linking profiles, its server, and
+' how it plays.
+function profileEntries() as object
     s = m.global.session
-    settings = store.settings()
     name = util.str(util.get(s, "displayName"), "this profile")
-    m.profileEntries = [
+    entries = [
         { id: "switch", label: "Switch profile", detail: "" }
         { id: "add", label: "Link another profile", detail: "Link another person's Music Assistant profile. Each profile uses that person's own account and music services." }
         { id: "remove", label: "Unlink this profile", detail: "Unlinks " + name + " from this TV and revokes its access." }
     ]
-    m.tvEntries = []
-    m.tvEntries.Push({ id: "server", label: "Server: " + util.str(util.get(s, "server"), "(none)"), detail: "Music Assistant " + util.str(util.get(s, "serverVersion"), "?") + " (API schema " + util.str(util.get(s, "schema"), "?") + "), this profile's server." + Chr(10) + "Each profile has its own server: link another profile to add one." })
+    ' This TV as a player of the server: its player ID, or how to make it
+    ' one. Selecting the row looks the player up again.
     pid = util.str(util.get(s, "playerId"), "")
     m.shownPlayerId = pid
-    if pid = "" then pid = "not found yet"
-    appId = util.str(util.getPath(m.global, "device.appId"), "dev")
-    m.tvEntries.Push({ id: "player", label: "This TV's player: " + pid, detail: "In Music Assistant, add the Media Assistant (Roku) player provider with app ID " + appId + " to play here. Select to look up this TV's player again." })
-    strict = settings.strictStreamHosts <> false
-    strictLabel = "Only play streams from this server: on"
-    if not strict then strictLabel = "Only play streams from this server: off"
-    m.tvEntries.Push({ id: "strict", label: strictLabel, isOn: strict, detail: "When on, Mass TV plays only streams from your Music Assistant server. Turn it off only if your server streams from a different address." })
+    if pid <> ""
+        player = "This TV's player there: " + pid + "."
+    else
+        appId = util.str(util.getPath(m.global, "device.appId"), "dev")
+        player = "This TV isn't a player there yet: add the Media Assistant (Roku) player provider, app ID " + appId + "."
+    end if
+    entries.Push({ id: "server", label: "Server: " + util.str(util.get(s, "server"), "(none)"), detail: "Music Assistant " + util.str(util.get(s, "serverVersion"), "?") + " (API schema " + util.str(util.get(s, "schema"), "?") + "), this profile's server. " + player + Chr(10) + "Link a new profile to change server." })
+    entries.Push({ id: "listfrom", label: "Queue collection when playing a track", checked: store.listFromPickedTrack(), detail: "When checked, Play/Pause on a track in an album's or playlist's list plays that album or playlist starting with that track. When not, it plays just that track. A track's own page always plays just the track; its More menu has the rest." })
+    return entries
+end function
+
+' This TV's rows, whichever profile is in use.
+function tvEntries() as object
+    settings = store.settings()
+    entries = []
+    minutes = store.screensaverMinutes()
+    saver = "off"
+    if minutes > 0 then saver = "after " + util.counted(minutes, "minute")
+    entries.Push({ id: "screensaver", label: "Now Playing screensaver: " + saver, detail: "While music plays, Now Playing hides its buttons after this long without a key press and lets the cover drift slowly around the screen. Any key brings them back. Select to change." })
+    entries.Push({ id: "strict", label: "Only play streams from this server", checked: settings.strictStreamHosts <> false, detail: "When checked, Mass TV plays only streams from your Music Assistant server. Uncheck it only if your server streams from a different address." })
     if m.global.debugBuild
         ip = ""
         ips = util.getPath(m.global, "device.ips")
         if util.isArray(ips) and ips.Count() > 0 then ip = ips[0]
-        m.tvEntries.Push({ id: "loglevel", label: "Log level: " + log.levelName(m.global.logLevel), detail: "Debug build. Logs: http://" + ip + ":8889/ (also /log?since=N and /state). Select to cycle the level." })
+        entries.Push({ id: "loglevel", label: "Log level: " + log.levelName(m.global.logLevel), detail: "Debug build. Logs: http://" + ip + ":8889/ (also /log?since=N and /state). Select to cycle the level." })
         collector = util.str(settings.logCollector, "")
         if collector = "" then collector = "off"
-        m.tvEntries.Push({ id: "collector", label: "Log collector: " + collector, detail: "Push logs to a collector (tools/log_collector.py). Set it with a deep link: masstv_collector=host:port. Select to turn it off." })
+        entries.Push({ id: "collector", label: "Log collector: " + collector, detail: "Push logs to a collector (tools/log_collector.py). Set it with a deep link: masstv_collector=host:port. Select to turn it off." })
     end if
-    m.tvEntries.Push({ id: "reset", label: "Forget everything", detail: "Removes the server and all linked profiles from this TV." })
+    entries.Push({ id: "reset", label: "Forget everything", detail: "Removes the server and all linked profiles from this TV." })
     ' Where to get help (Roku's distribution agreement, Exhibit A 3.4:
     ' support contact easily found in the app).
-    m.tvEntries.Push({ id: "support", label: "Help and support: " + SUPPORT_SITE, detail: "Questions, problems, or ideas? Open an issue on GitHub, at the address on this row. Select for details to include." })
-    fill(m.profileRows, m.profileEntries)
-    fill(m.tvRows, m.tvEntries)
-    onFocused()
-    ' A row's label that changed under the cursor (a switch) is said.
-    speakList(current().list)
-end sub
+    entries.Push({ id: "support", label: "Help and support: " + SUPPORT_SITE, detail: "Questions, problems, or ideas? Open an issue on GitHub, at the address on this row. Select for details to include." })
+    return entries
+end function
 
-' Switches that are on (blue, the "selected" idiom) set isOn: true.
+' Checkbox rows carry checked (MenuRow draws the box); the screen reader
+' says their state before the description.
 sub fill(list as object, entries as object)
     focused = list.itemFocused
     root = CreateObject("roSGNode", "ContentNode")
     for each e in entries
         n = root.CreateChild("ContentNode")
         n.title = e.label
-        n.AddField("chosen", "boolean", false)
-        n.chosen = util.get(e, "isOn", false) = true
+        hint = e.detail
+        if e.DoesExist("checked")
+            n.AddField("checked", "boolean", false)
+            n.checked = e.checked = true
+            state = "not checked"
+            if e.checked = true then state = "checked"
+            hint = speech.join([state, hint])
+        end if
         ' The screen reader says the row's description (shown at the
         ' right) after its place.
-        speech.setHint(n, e.detail)
+        speech.setHint(n, hint)
     end for
     list.content = root
     if focused > 0 and focused < entries.Count() then list.jumpToItem = focused
 end sub
 
-' The focused list and its entries.
-function current() as object
-    if m.tvRows.isInFocusChain() then return { list: m.tvRows, entries: m.tvEntries }
-    return { list: m.profileRows, entries: m.profileEntries }
-end function
+' The shown tab changed (OK on the tabs): its rows, from the first.
+sub onTab()
+    log.info("settings", "tab", { shown: m.tabs.shown })
+    fill(m.rows, [])
+    build()
+    m.rows.jumpToItem = 0
+end sub
 
-' Up and Down cross between the two lists (each passes Down on at its
-' last row and Up at its first); Up from the first row goes on to the nav
-' bar (MainScene).
+' Up from the first row goes to the tabs, and on from there to the nav
+' bar (MainScene); Down from the tabs to the rows; Back from the rows to
+' the tabs (up a level), then on.
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
-    if key = "down" and m.profileRows.hasFocus()
-        m.tvRows.jumpToItem = 0
-        m.focusTarget = m.tvRows
-        m.tvRows.setFocus(true)
-        onFocused()
+    if (key = "up" or key = "back") and m.rows.hasFocus()
+        m.focusTarget = m.tabs
+        m.tabs.setFocus(true)
         return true
-    else if key = "up" and m.tvRows.hasFocus()
-        m.profileRows.jumpToItem = m.profileEntries.Count() - 1
-        m.focusTarget = m.profileRows
-        m.profileRows.setFocus(true)
-        onFocused()
+    else if key = "down" and m.tabs.isInFocusChain()
+        m.focusTarget = m.rows
+        m.rows.setFocus(true)
         return true
     end if
     return false
@@ -183,17 +216,26 @@ function deviceLines() as object
     return lines
 end function
 
+' The description at the right: the focused row's, or while the tabs have
+' the focus, what the shown tab holds.
 sub onFocused()
-    c = current()
-    e = c.entries[c.list.itemFocused]
+    if m.tabs.isInFocusChain()
+        name = util.str(util.get(m.global.session, "displayName"), "this profile")
+        if m.tabs.shown = TAB_TV
+            m.detail.text = "Settings for this TV, whichever profile is in use: the Now Playing screensaver, which streams to play, and help."
+        else
+            m.detail.text = "Settings for " + name + ", the profile in use: switching and linking profiles, its Music Assistant server, and how it plays."
+        end if
+        return
+    end if
+    e = m.entries[m.rows.itemFocused]
     if e = invalid then return
     m.detail.text = e.detail
     log.debug("settings", "focus " + e.id)
 end sub
 
 sub onSelected()
-    c = current()
-    e = c.entries[c.list.itemSelected]
+    e = m.entries[m.rows.itemSelected]
     if e = invalid then return
     log.info("settings", "select " + e.id)
     if e.id = "switch"
@@ -202,11 +244,17 @@ sub onSelected()
         m.top.navigate = { screen: "setup", params: { server: store.server() }, root: true }
     else if e.id = "remove"
         confirm("Unlink this profile from this TV?", "remove")
-    else if e.id = "player"
+    else if e.id = "server"
         apic.call("players/all", {}, onPlayers)
     else if e.id = "strict"
         store.setSetting("strictStreamHosts", not (store.settings().strictStreamHosts <> false))
         m.global.toast = "Takes effect when a profile is next chosen."
+        build()
+    else if e.id = "listfrom"
+        store.setProfileSetting("listFromPickedTrack", not store.listFromPickedTrack())
+        build()
+    else if e.id = "screensaver"
+        store.setSetting("screensaverMinutes", store.nextScreensaverMinutes(store.screensaverMinutes()))
         build()
     else if e.id = "loglevel"
         lvl = m.global.logLevel + 1
@@ -292,6 +340,7 @@ sub onConfirm(event as object)
         ' The request carries the token, taken now, so the session can go.
         apic.call("auth/logout", {}, invalid)
         store.setProfileList(profiles.remove(store.profileList(), util.str(s.server, ""), util.str(s.userId, "")))
+        store.forgetProfileSettings(util.str(s.server, ""), util.str(s.userId, ""))
         ' Signed out: its token is revoked, and nothing may keep using it.
         m.global.session = {}
         log.info("settings", "profile removed")

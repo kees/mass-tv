@@ -10,6 +10,30 @@ sub init()
     m.focusTarget = m.rows
     speakLists([m.rows])
     m.top.ObserveField("params", "onParams")
+    m.global.ObserveFieldScoped("recentChanged", "onRecentChanged")
+end sub
+
+' Something was removed from the recently played list (a Detail page on
+' top of Home): read the row again.
+sub onRecentChanged()
+    apic.call("music/recently_played_items", { limit: ma.RECENT_LIMIT }, onRecentReloaded)
+end sub
+
+sub onRecentReloaded(resp as object, ctx as dynamic)
+    if not resp.ok or not util.isArray(resp.data) then return
+    ' The row may be gone already (it came back empty).
+    index = -1
+    for i = 0 to m.root.getChildCount() - 1
+        if m.root.getChild(i).isSameNode(m.recent) then index = i
+    end for
+    if index < 0 then return
+    log.debug("home", "recently played reloaded", { items: resp.data.Count() })
+    if resp.data.Count() = 0
+        m.root.removeChildIndex(index)
+        return
+    end if
+    m.recent.removeChildrenIndex(m.recent.getChildCount(), 0)
+    addCards(m.recent, resp.data)
 end sub
 
 sub onParams()
@@ -19,7 +43,7 @@ sub onParams()
     m.recent = addRow("Recently played")
     m.pendingRows = 2
     m.loadingIndicator.active = true
-    apic.call("music/recently_played_items", { limit: 20 }, onRecent)
+    apic.call("music/recently_played_items", { limit: ma.RECENT_LIMIT }, onRecent)
     apic.call("music/recommendations", {}, onRecommendations)
 end sub
 
@@ -30,12 +54,19 @@ function addRow(title as string) as object
 end function
 
 sub onRecent(resp as object, ctx as dynamic)
-    if resp.ok and util.isArray(resp.data)
-        for each item in resp.data
-            m.recent.appendChild(itemNode(item))
-        end for
-    end if
+    if resp.ok and util.isArray(resp.data) then addCards(m.recent, resp.data)
     rowDone()
+end sub
+
+' A row's cards. In a row that mixes kinds (albums, tracks, playlists,
+' artists: "Recently played"), each card's second line says which.
+sub addCards(row as object, items as object)
+    mixed = ma.mixesKinds(items)
+    for each item in items
+        n = itemNode(item)
+        if mixed then n.description = ma.kindSubtitleOf(item)
+        row.appendChild(n)
+    end for
 end sub
 
 sub onRecommendations(resp as object, ctx as dynamic)
@@ -53,9 +84,7 @@ sub onRecommendations(resp as object, ctx as dynamic)
             row = addRow(util.str(folder.name, ""))
             items = util.get(folder, "items")
             if util.isArray(items) and items.Count() > 0
-                for each item in items
-                    row.appendChild(itemNode(item))
-                end for
+                addCards(row, items)
             else
                 m.pendingRows = m.pendingRows + 1
                 apic.call("music/recommendations/items", { provider: folder.provider, item_id: folder.item_id }, onRowItems, { row: row })
@@ -68,11 +97,7 @@ sub onRecommendations(resp as object, ctx as dynamic)
 end sub
 
 sub onRowItems(resp as object, ctx as object)
-    if resp.ok and util.isArray(resp.data)
-        for each item in resp.data
-            ctx.row.appendChild(itemNode(item))
-        end for
-    end if
+    if resp.ok and util.isArray(resp.data) then addCards(ctx.row, resp.data)
     rowDone()
 end sub
 

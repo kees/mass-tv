@@ -52,8 +52,13 @@ LATIN_FONT = "NotoSans[wdth,wght].ttf"
 EMOJI_FONT = "NotoEmoji[wght].ttf"
 ARABIC_FONT = "NotoSansArabic[wdth,wght].ttf"
 HEBREW_FONT = "NotoSansHebrew[wdth,wght].ttf"
+MATH_FONT = "NotoSansMath-Regular.ttf"
+SYMBOLS1_FONT = "NotoSansSymbols[wght].ttf"
+SYMBOLS2_FONT = "NotoSansSymbols2-Regular.ttf"
+MUSIC_FONT = "NotoMusic-Regular.ttf"
 # The fonts merged into the bundled one.
-BUNDLED = (CJK_FONT, LATIN_FONT, EMOJI_FONT, ARABIC_FONT, HEBREW_FONT)
+BUNDLED = (CJK_FONT, LATIN_FONT, EMOJI_FONT, ARABIC_FONT, HEBREW_FONT, MATH_FONT, SYMBOLS1_FONT,
+           SYMBOLS2_FONT, MUSIC_FONT)
 SOURCES_LIST = os.path.join(ROOT, "fonts", "sources.txt")
 
 
@@ -115,11 +120,22 @@ def big5_common():
 
 # Character sets by name. Each is a function, so only the used ones run.
 SET_DEFS = {
-    # Latin (with Vietnamese), Greek, Cyrillic, and punctuation: a label
-    # that switches fonts is drawn in this font entirely.
-    "latin": lambda: span(0x20, 0x7E) | span(0xA0, 0x24F) | span(0x300, 0x36F) | span(0x1E00, 0x1EFF),
+    # Latin (with Vietnamese, and the IPA letters and modifier letters of
+    # pronunciations such as /ˈkɛʃə/), Greek, Cyrillic, and punctuation: a
+    # label that switches fonts is drawn in this font entirely.
+    "latin": lambda: span(0x20, 0x7E) | span(0xA0, 0x24F) | span(0x250, 0x2FF) | span(0x300, 0x36F)
+    | span(0x1D00, 0x1DBF) | span(0x1E00, 0x1EFF),
     "greek-cyrillic": lambda: span(0x370, 0x3FF) | span(0x400, 0x4FF),
-    "punctuation": lambda: span(0x2000, 0x206F) | span(0x20A0, 0x20CF),
+    # General and supplemental punctuation (⸺ ⸻) and currency signs.
+    "punctuation": lambda: span(0x2000, 0x206F) | span(0x20A0, 0x20CF) | span(0x2E00, 0x2E7F),
+    # Letterlike symbols (℗ ™ №) and number forms (⅓ Ⅻ), in Noto Sans's
+    # design rather than the CJK font's, which lacks ℗.
+    "letterlike": lambda: span(0x2100, 0x218F),
+    # The "fancy text" letters and digits of titles and names (𝐁𝐨𝐥𝐝,
+    # 𝓢𝓬𝓻𝓲𝓹𝓽, 𝔉𝔯𝔞𝔨𝔱𝔲𝔯, 𝕯𝖔𝖚𝖇𝖑𝖊); the holes in them (ℬ, ℰ) are letterlike.
+    "math-alnum": lambda: span(0x1D400, 0x1D7FF),
+    # Musical symbols (𝄞 𝄢).
+    "music": lambda: span(0x1D100, 0x1D1FF),
     # Arrows, shapes, and symbols (music notes, stars, triangles).
     "symbols": lambda: span(0x2070, 0x209F) | span(0x2100, 0x2BFF),
     # CJK punctuation, kana, half- and full-width forms.
@@ -153,12 +169,18 @@ SET_DEFS = {
 # What goes in from each font. Noto Sans gives what it has of its sets;
 # the CJK font gives the rest (whatever of LATIN_SETS Noto Sans lacks,
 # then its own sets).
-LATIN_SETS = ["latin", "greek-cyrillic", "punctuation"]
+LATIN_SETS = ["latin", "greek-cyrillic", "punctuation", "letterlike"]
 CJK_SETS = ["symbols", "cjk-punct", "kana", "hangul", "han-gb2312-1", "han-jis-1"]
 # Noto Sans Arabic and Noto Sans Hebrew give these (whatever the fonts
 # above don't).
 ARABIC_SETS = ["arabic"]
 HEBREW_SETS = ["hebrew"]
+# Noto Sans Math and Noto Music give their sets; Noto Sans Symbols and
+# Symbols 2 only fill the symbols no font above has (☾, ✦ ✧), so no glyph
+# the fonts above draw changes.
+MATH_SETS = ["math-alnum"]
+MUSIC_SETS = ["music"]
+SYMBOLS_SETS = ["symbols"]
 # The emoji font gives every emoji it has at U+2190 and above (below
 # that it maps digits, #, *, and marks like (c) for keycap sequences,
 # which the CJK font draws as text). Below EMOJI_PICTOGRAPHS, where most
@@ -242,7 +264,9 @@ def subset(font, unicodes, features):
     from fontTools import subset as ftsubset
     opts = ftsubset.Options()
     opts.layout_features = features
-    opts.drop_tables += ["BASE", "DSIG", "vhea", "vmtx", "VORG", "VVAR", "STAT", "gasp"]
+    # MATH (Noto Sans Math's equation layout) can't be merged, and a label
+    # doesn't use it.
+    opts.drop_tables += ["BASE", "DSIG", "vhea", "vmtx", "VORG", "VVAR", "STAT", "gasp", "MATH"]
     opts.name_IDs = ["*"]
     opts.notdef_outline = True
     opts.glyph_names = False
@@ -263,8 +287,11 @@ def source_part(name, unicodes, location, upem):
     # forms Bidi.bs draws need no composing.
     features = ["kern", "liga"] if name == ARABIC_FONT else ["kern", "liga", "ccmp"]
     subset(font, unicodes, features)
-    axes = {a.axisTag for a in font["fvar"].axes}
-    font = instancer.instantiateVariableFont(font, {k: v for k, v in location.items() if k in axes})
+    # Variable sources are pinned to the weight; static ones (Math,
+    # Symbols 2, Music) are Regular only.
+    if "fvar" in font:
+        axes = {a.axisTag for a in font["fvar"].axes}
+        font = instancer.instantiateVariableFont(font, {k: v for k, v in location.items() if k in axes})
     if font["head"].unitsPerEm != upem:
         scale_upem(font, upem)
     buf = io.BytesIO()
@@ -367,10 +394,10 @@ def cmap_of(name):
 
 def codes():
     """Each source's code points, in merge order (CJK, Latin, emoji,
-    Arabic, Hebrew). The emoji font's own (from EMOJI_FROM up) come
-    first, then Noto Sans's of LATIN_SETS, then the CJK font takes the
-    rest of the wanted sets, and Noto Sans Arabic and Hebrew their
-    scripts'."""
+    Arabic, Hebrew, Math, Symbols, Symbols 2, Music). The emoji font's own (from
+    EMOJI_FROM up) come first, then Noto Sans's of LATIN_SETS, then the
+    CJK font takes the rest of the wanted sets, and each later font its
+    sets' characters that no earlier one has."""
     text_cmap = cmap_of(CJK_FONT) | cmap_of(LATIN_FONT)
     emoji_codes = {c for c in cmap_of(EMOJI_FONT)
                    if c >= EMOJI_FROM and c not in ZERO_WIDTH
@@ -378,10 +405,14 @@ def codes():
     wanted = charset(LATIN_SETS) | charset(CJK_SETS) | extra_chars()
     latin_codes = (charset(LATIN_SETS) & cmap_of(LATIN_FONT)) - emoji_codes
     cjk_codes = (wanted & cmap_of(CJK_FONT)) - emoji_codes - latin_codes
-    arabic_codes = (charset(ARABIC_SETS) & cmap_of(ARABIC_FONT)) - emoji_codes - latin_codes - cjk_codes
-    hebrew_codes = (charset(HEBREW_SETS) & cmap_of(HEBREW_FONT)) - emoji_codes - latin_codes - cjk_codes - arabic_codes
-    return [(CJK_FONT, cjk_codes), (LATIN_FONT, latin_codes), (EMOJI_FONT, emoji_codes),
-            (ARABIC_FONT, arabic_codes), (HEBREW_FONT, hebrew_codes)]
+    taken = emoji_codes | latin_codes | cjk_codes
+    out = [(CJK_FONT, cjk_codes), (LATIN_FONT, latin_codes), (EMOJI_FONT, emoji_codes)]
+    for name, sets in ((ARABIC_FONT, ARABIC_SETS), (HEBREW_FONT, HEBREW_SETS), (MATH_FONT, MATH_SETS),
+                       (SYMBOLS1_FONT, SYMBOLS_SETS), (SYMBOLS2_FONT, SYMBOLS_SETS), (MUSIC_FONT, MUSIC_SETS)):
+        mine = (charset(sets) & cmap_of(name)) - taken
+        out.append((name, mine))
+        taken |= mine
+    return out
 
 
 def cmd_build(_args):

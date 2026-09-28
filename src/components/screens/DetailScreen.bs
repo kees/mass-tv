@@ -28,9 +28,14 @@ sub init()
     m.focusTarget = m.buttons
     speakLists([m.tracks, m.rows])
     m.trackData = []
+    m.listFromHere = false
     m.canSortByDate = false
     m.sortBy = ""
     m.top.ObserveField("params", "onParams")
+    ' What the keys do where the focus is (shown at the bottom while
+    ' nothing plays): the buttons, the tracks, or the rows of cards.
+    onFocusMoves([m.buttons, m.tracks, m.rows], "updatePageHint")
+    m.buttons.ObserveFieldScoped("focusIndex", "updatePageHint")
     m.global.ObserveFieldScoped("queueState", "onQueueState")
     ' The source names can arrive after the page opens (just after launch).
     m.global.ObserveFieldScoped("musicSources", "onMusicSources")
@@ -47,12 +52,20 @@ sub onParams()
     m.item = util.get(m.top.params, "item", {})
     m.type = ma.mediaTypeOf(m.item)
     m.isArtist = m.type = "artist"
+    ' A track's page: rows of cards (its album, its artists) instead of a
+    ' track list. Opened from an album's or playlist's list, it knows that
+    ' list (context: what to play, from this track).
+    m.isTrack = m.type = "track"
+    m.context = util.get(m.top.params, "context")
+    m.usesRows = m.isArtist or m.isTrack
+    m.listFromHere = store.listFromPickedTrack()
+    if m.isTrack then log.debug("detail", "track page", { uri: ma.uriOf(m.item), name: util.get(m.item, "name"), from: util.get(m.context, "media") })
     ' A playlist's "Newest first" choice is remembered per playlist.
     m.orderKey = ma.uriOf(m.item)
     if m.type = "playlist" then m.sortBy = util.str(util.get(playlistOrders(), m.orderKey), "")
-    m.tracks.visible = not m.isArtist
-    m.tracksFade.visible = not m.isArtist
-    m.rows.visible = m.isArtist
+    m.tracks.visible = not m.usesRows
+    m.tracksFade.visible = not m.usesRows
+    m.rows.visible = m.usesRows
     m.trackContent = CreateObject("roSGNode", "ContentNode")
     m.tracks.content = m.trackContent
     renderHeader()
@@ -63,6 +76,10 @@ sub onParams()
     ' opened, and the page loads that album's tracks.
     m.resolving = util.str(util.get(m.item, "provider"), "") = "musicbrainz"
     if uri <> "" then apic.call("music/item_by_uri", { uri: uri }, onFullItem, invalid, { timeoutMs: 30000 })
+    ' Whether this item is in Home's "Recently played" (More then offers
+    ' to remove it).
+    m.recentList = invalid
+    apic.call("music/recently_played_items", { limit: ma.RECENT_LIMIT }, onRecentList)
     if m.resolving
         m.loadingIndicator.active = true
     else
@@ -71,7 +88,7 @@ sub onParams()
 end sub
 
 sub renderHeader()
-    kinds = { album: "ALBUM", playlist: "PLAYLIST", artist: "ARTIST", podcast: "PODCAST", audiobook: "AUDIOBOOK" }
+    kinds = { album: "ALBUM", playlist: "PLAYLIST", artist: "ARTIST", podcast: "PODCAST", audiobook: "AUDIOBOOK", track: "TRACK" }
     m.kind.text = util.str(kinds[m.type], UCase(m.type))
     fonts.label(m.titleLabel, ma.titleOf(m.item), true)
     layoutText()
@@ -93,7 +110,12 @@ sub layoutText()
     if m.isArtist or m.type = "album" then desc = ma.descriptionOf(m.item)
     subtitle = ma.subtitleOf(m.item)
     info = util.str(m.infoText, "")
-    if m.type = "album"
+    ' A track: its length (the album and artists are in the subtitle).
+    if m.isTrack and info = ""
+        dur = util.get(m.item, "duration", 0)
+        if util.isNumber(dur) and dur > 0 then info = util.formatDuration(dur)
+    end if
+    if m.type = "album" or m.isTrack
         source = ma.sourceText(m.item, m.global.musicSources)
         if source <> "" and info <> "" then info = info + " · " + source
         if source <> "" and info = "" then info = source
@@ -124,10 +146,18 @@ sub layoutText()
     m.buttons.context = speech.join([ma.titleOf(m.item), LCase(m.kind.text), subtitleSaid])
 end sub
 
-' What the Play key plays here: the whole item, starting at the focused
-' track when the track list has focus (never just the lone track, which
-' would leave a one-track queue with nothing to skip to).
+' What the Play key plays here: with a track focused in the list, that
+' track (as MA's web UI plays a picked track; a track's page offers "Play
+' album from here"); a podcast's episode, the podcast from that episode;
+' otherwise the whole item.
 sub setFocusedPlay(track as dynamic)
+    ' The profile's "Queue collection when playing a track": the album or
+    ' playlist starting with it.
+    if util.isAA(track) and ma.mediaTypeOf(track) = "track" and not m.listFromHere
+        m.top.focusedItem = track
+        m.top.focusedPlay = {}
+        return
+    end if
     m.top.focusedItem = m.item
     ' Shuffle is passed explicitly: play_media only follows the queue's
     ' shuffle setting for playlists; an album switches it off.
@@ -141,13 +171,23 @@ sub setFocusedPlay(track as dynamic)
 end sub
 
 sub buildButtons()
-    m.buttonIds = ["play", "shuffle"]
-    labels = ["Play", "Shuffle"]
+    m.buttonIds = ["play"]
+    labels = ["Play"]
+    active = [false]
     ' Shuffle switches MA's queue shuffle and shows it; Play and picking a
     ' track pass it to play_media (which otherwise turns shuffle off for an
-    ' album).
+    ' album). A single track has nothing to shuffle.
     if m.shuffleOn = invalid then m.shuffleOn = queueShuffles()
-    active = [false, m.shuffleOn]
+    if m.isTrack
+        ' A track's page: queue it without leaving the page.
+        m.buttonIds.Push("add")
+        labels.Push("Add to queue")
+        active.Push(false)
+    else
+        m.buttonIds.Push("shuffle")
+        labels.Push("Shuffle")
+        active.Push(m.shuffleOn)
+    end if
     if m.type <> "podcast" and m.type <> "audiobook"
         m.buttonIds.Push("radio")
         ' MA's endless mix (radio_playlist://): the item's tracks plus
@@ -170,11 +210,15 @@ sub buildButtons()
     active.Push(false)
     m.buttons.buttons = labels
     m.buttons.active = active
+    ' A switch's hint says what OK does now ("turn shuffle off").
+    updatePageHint()
 end sub
 
 ' Item options the page's buttons already offer, left out of its More
-' menu (which then holds Play next, Add to queue, View artist).
+' menu (which then holds Play next, Add to queue, View artist; a track's
+' page has Add to queue as a button).
 function buttonActions() as object
+    if m.isTrack then return ["play", "add", "radio", "favorite"]
     return ["play", "shuffle", "radio", "favorite"]
 end function
 
@@ -277,6 +321,9 @@ sub onFullItem(resp as object, ctx as dynamic)
     m.item = resp.data
     renderHeader()
     buildButtons()
+    ' The full track's album and artists (with their images), unless the
+    ' rows are being browsed.
+    if m.isTrack and not m.rows.isInFocusChain() then buildTrackRows()
     if m.resolving
         m.resolving = false
         log.debug("detail", "resolved", { uri: ma.uriOf(m.item) })
@@ -284,7 +331,38 @@ sub onFullItem(resp as object, ctx as dynamic)
     end if
 end sub
 
+' A track page's rows, from the track itself: its album, then its
+' artists, each row only when the track has one.
+sub buildTrackRows()
+    m.rowRoot = CreateObject("roSGNode", "ContentNode")
+    album = util.get(m.item, "album")
+    if util.isAA(album)
+        album = util.copyAA(album)
+        if util.str(album.media_type, "") = "" then album.media_type = "album"
+        row = m.rowRoot.CreateChild("ContentNode")
+        row.title = "Album"
+        row.appendChild(itemNode(album))
+    end if
+    artists = util.get(m.item, "artists")
+    if util.isArray(artists) and artists.Count() > 0
+        row = m.rowRoot.CreateChild("ContentNode")
+        row.title = "Artists"
+        for each a in artists
+            if util.isAA(a)
+                a = util.copyAA(a)
+                if util.str(a.media_type, "") = "" then a.media_type = "artist"
+                row.appendChild(itemNode(a))
+            end if
+        end for
+    end if
+    m.rows.content = m.rowRoot
+end sub
+
 sub loadChildren()
+    if m.isTrack
+        buildTrackRows()
+        return
+    end if
     id = util.str(util.get(m.item, "item_id"), "")
     prov = util.str(util.get(m.item, "provider"), "library")
     args = { item_id: id, provider_instance_id_or_domain: prov }
@@ -446,15 +524,73 @@ sub addAppearsOn()
     m.artistTracks = invalid
 end sub
 
+sub onRecentList(resp as object, ctx as dynamic)
+    if resp.ok and util.isArray(resp.data) then m.recentList = resp.data
+end sub
+
+' The key hint for where the focus is: on album and playlist pages only
+' (their buttons and track list); none on the others, or with the focus
+' elsewhere (the nav bar, a menu).
+sub updatePageHint()
+    hint = ""
+    if (m.type = "album" or m.type = "playlist") and m.top.isInFocusChain()
+        if m.tracks.isInFocusChain()
+            hint = hints.listTrack(m.listFromHere = true, m.type)
+        else if m.buttons.isInFocusChain()
+            hint = hints.buttons(buttonOkText())
+        end if
+    end if
+    if m.top.keyHint <> hint then m.top.keyHint = hint
+end sub
+
+' What OK does on the focused button, for the key hint.
+function buttonOkText() as string
+    if m.buttonIds = invalid then return ""
+    id = util.str(m.buttonIds[m.buttons.focusIndex], "")
+    kind = m.type
+    if id = "play" then return "play the " + kind
+    if id = "shuffle"
+        if m.shuffleOn = true then return "turn shuffle off"
+        return "turn shuffle on"
+    end if
+    if id = "radio" then return "start an endless mix from the " + kind
+    if id = "favorite"
+        if m.item.favorite = true then return "remove the " + kind + " from favorites"
+        return "add the " + kind + " to favorites"
+    end if
+    if id = "newest"
+        if m.sortBy = ma.SORT_NEWEST then return "list tracks in the playlist's order"
+        return "list the newest tracks first"
+    end if
+    if id = "more" then return "see more options"
+    return ""
+end function
+
+' A track page's Play: always the track itself, played now (MA's
+' "play": what was queued after the current item still follows); its
+' collections are in More ("Play album from here", "Play playlist from
+' here").
+sub playTrack()
+    actions.play(m.item, "play")
+end sub
+
 sub onButton()
     id = m.buttonIds[m.buttons.selected]
     log.debug("detail", "button " + id)
-    if id = "play"
+    if id = "play" and m.isTrack
+        playTrack()
+    else if id = "play"
         actions.play(m.item, "replace", "", m.shuffleOn = true, activeSort())
+    else if id = "add"
+        actions.play(m.item, "add")
     else if id = "newest"
         toggleNewestFirst()
     else if id = "more"
-        showItemOptions(m.item, buttonActions())
+        ' A track page opened from a playlist: "Play playlist from here"
+        ' (its album one comes from the track itself).
+        fromList = invalid
+        if m.isTrack and util.str(util.get(m.context, "kind"), "") = "playlist" then fromList = m.context
+        showItemOptions(m.item, buttonActions(), ma.recentEntryFor(m.recentList, m.item), fromList)
     else if id = "shuffle"
         toggleShuffle()
     else if id = "radio"
@@ -483,12 +619,17 @@ sub onTrackFocused()
     setFocusedPlay(t)
 end sub
 
+' OK opens the track's page, which plays this list from the track (in
+' the order shown); the Play key plays it from here at once.
 sub onTrackSelected()
     t = trackAt(m.tracks.itemSelected)
     if t = invalid then return
-    ' Play the whole album/playlist starting at this track, in the order
-    ' shown.
-    actions.play(m.item, "replace", ma.uriOf(t), m.shuffleOn = true, activeSort(), t)
+    if ma.mediaTypeOf(t) <> "track"
+        ' A podcast's episodes: no page of their own.
+        actions.play(m.item, "replace", ma.uriOf(t), m.shuffleOn = true, activeSort(), t)
+        return
+    end if
+    go("detail", { item: t, context: { media: ma.uriOf(m.item), kind: m.type, sortBy: activeSort(), shuffle: m.shuffleOn = true } })
 end sub
 
 function rowItemAt(rc as dynamic) as dynamic
@@ -514,12 +655,14 @@ end sub
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
     content = m.tracks
-    if m.isArtist then content = m.rows
+    if m.usesRows then content = m.rows
     if key = "down" and m.buttons.isInFocusChain()
+        ' A track's page with no rows (no album or artists to show).
+        if m.usesRows and (m.rows.content = invalid or m.rows.content.getChildCount() = 0) then return true
         m.focusTarget = content
         ' Onto the card below the button (the track list keeps its track).
         aim.moveFocus(m.buttons, content)
-        if m.isArtist
+        if m.usesRows
             onRowFocused()
         else
             onTrackFocused()
@@ -532,7 +675,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         aim.moveFocus(content, m.buttons)
         setFocusedPlay(invalid)
         return true
-    else if ((key = "left" or key = "right") and not m.isArtist and content.isInFocusChain()) or (key = "back" and content.isInFocusChain())
+    else if ((key = "left" or key = "right") and not m.usesRows and content.isInFocusChain()) or (key = "back" and content.isInFocusChain())
         ' The track list has no use for Left/Right: jump to the buttons.
         ' Back from the tracks or an artist's rows goes up a level, to the
         ' buttons too (Back there leaves the page). The list keeps its

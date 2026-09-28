@@ -109,6 +109,13 @@ sub maApiTests()
     tst.eq(ma.yearOf({ metadata: { release_date: "" }, album: { year: 0 } }), "", "no year")
     tst.eq(ma.yearOf({ metadata: { release_date: "0000-00-00" } }), "", "a zero date isn't a year")
     tst.eq(ma.yearOf(invalid), "", "nothing")
+    tst.eq(ma.streamQualityText({ content_type: "flac", bit_depth: 16, sample_rate: 44100, bit_rate: 900 }, "flac"), "FLAC · 16-bit · 44.1 kHz", "quality: lossless, sent as is")
+    tst.eq(ma.streamQualityText({ content_type: "mp3", bit_depth: 16, sample_rate: 44100, bit_rate: 213 }, "flac"), "MP3 · 213 kbps · 44.1 kHz → FLAC", "quality: lossy, transcoded")
+    tst.eq(ma.streamQualityText({ content_type: "flac", bit_depth: 24, sample_rate: 96000 }, ""), "FLAC · 24-bit · 96 kHz", "quality: hi-res, output unknown")
+    tst.eq(ma.streamQualityText({ content_type: "pcm_s24le", bit_depth: 24, sample_rate: 48000 }, "flac"), "PCM · 24-bit · 48 kHz → FLAC", "quality: PCM")
+    tst.eq(ma.streamQualityText({ content_type: "opus2", sample_rate: 48000 }, "flac"), "OPUS2 · 48 kHz → FLAC", "quality: an unknown type as MA names it")
+    tst.eq(ma.streamQualityText({ content_type: "unknown" }, "flac"), "", "quality: MA doesn't know")
+    tst.eq(ma.streamQualityText(invalid, "flac"), "", "quality: no stream details")
     np.queueItemId = "q9"
     tst.eq(ma.nowPlayingText(np, gap), { title: "Second", line2: "MA's B" }, "stream metadata when unknown")
 
@@ -138,6 +145,41 @@ sub maApiTests()
     tst.eq(ma.appearsOnAlbums(invalid, own), [], "no tracks")
     tst.eq(ma.appearsOnAlbums(tracks, invalid).Count(), 3, "no own albums: every album")
 
+    ' An item's entry in the recently played list: by its own uri, or the
+    ' logged identity among its provider mappings; the media type must match.
+    recent = [
+        { item_id: "12", provider: "library", media_type: "album", name: "Lib album" }
+        { item_id: "777", provider: "example_music--abc", media_type: "album", name: "Svc album" }
+        { item_id: "12", provider: "library", media_type: "track", name: "Same id, a track" }
+    ]
+    got = ma.recentEntryFor(recent, { uri: "library://album/12", media_type: "album" })
+    tst.eq(util.str(util.get(got, "name"), ""), "Lib album", "recent: the item's own uri")
+    svc = { uri: "library://album/40", media_type: "album", provider_mappings: [{ item_id: "777", provider_instance: "example_music--abc", provider_domain: "example_music" }] }
+    got = ma.recentEntryFor(recent, svc)
+    tst.eq(util.str(util.get(got, "name"), ""), "Svc album", "recent: logged as the service's item, found through the mappings")
+    tst.ok(ma.recentEntryFor(recent, { uri: "library://playlist/12", media_type: "playlist" }) = invalid, "recent: another type with the same id isn't a match")
+    tst.ok(ma.recentEntryFor(recent, { uri: "library://album/99", media_type: "album" }) = invalid, "recent: not in the list")
+    tst.ok(ma.recentEntryFor(invalid, svc) = invalid, "recent: no list yet")
+
+    ' Cards in a row of mixed kinds name their kind first.
+    album = { media_type: "album", name: "Ashes", year: 2010, artists: [{ name: "Josh Woodward" }] }
+    trk = { media_type: "track", name: "Let It In", artists: [{ name: "Josh Woodward" }], album: { name: "Ashes" } }
+    tst.eq(ma.kindSubtitleOf(album), "Album · Josh Woodward · 2010", "kind: album")
+    tst.eq(ma.kindSubtitleOf(trk), "Track · Josh Woodward · Ashes", "kind: track")
+    tst.eq(ma.kindSubtitleOf({ media_type: "artist", name: "Josh Woodward" }), "Artist", "kind: artist, not twice")
+    tst.eq(ma.kindSubtitleOf({ media_type: "playlist", name: "Mix" }), "Playlist", "kind: a playlist without an owner")
+    tst.eq(ma.kindSubtitleOf({ media_type: "folder", name: "X" }), "", "kind: an unnamed kind keeps its subtitle")
+    tst.ok(ma.mixesKinds([album, trk]), "mixed: an album and a track")
+    tst.ok(not ma.mixesKinds([album, album]), "not mixed: two albums")
+    tst.ok(not ma.mixesKinds([]), "not mixed: nothing")
+
+    ' What MA won't move or remove: up to the player's buffered item.
+    tst.eq(ma.committedQueueIndex({ current_index: 3, index_in_buffer: 4 }), 4, "committed: the next track handed over")
+    tst.eq(ma.committedQueueIndex({ current_index: 5, index_in_buffer: 0 }), 5, "committed: repeat wrapped the buffer to the front")
+    tst.eq(ma.committedQueueIndex({ current_index: invalid, index_in_buffer: 2 }), 2, "committed: no current index")
+    tst.eq(ma.committedQueueIndex({ current_index: 3, index_in_buffer: invalid }), -1, "committed: nothing buffered, no limit")
+    tst.eq(ma.committedQueueIndex(invalid), -1, "committed: no queue state")
+
     ' Where a library artist's whole catalog comes from without MA's
     ' discography: the user's own streaming link.
     visible = { "filesystem_local--a": "Local disk", "example_music--mine": "Example Music" }
@@ -160,7 +202,10 @@ sub maApiTests()
     both = { provider: "library", provider_mappings: [{ provider_domain: "example_music", provider_instance: "example_music--AbC" }, { provider_domain: "filesystem_local", provider_instance: "filesystem_local--x1" }, { provider_domain: "example_music", provider_instance: "example_music--AbC" }] }
     tst.eq(ma.sourceText(both, names), "Example Music, Filesystem (local disk) [music]", "each source once")
     gone = { provider: "library", provider_mappings: [{ provider_domain: "example_music", provider_instance: "example_music--AbC", available: false }, { provider_domain: "other_music", provider_instance: "other_music--z9" }] }
-    tst.eq(ma.sourceText(gone, names), "other_music", "an unavailable mapping left out; an unknown source as MA gives it")
+    tst.eq(ma.sourceText(gone, {}), "other_music", "an unavailable mapping left out; before names are known, a source as MA gives it")
+    tst.eq(ma.sourceText(gone, names), "", "a source not among the profile's is someone else's: left out")
+    shared = { provider: "library", provider_mappings: [{ provider_domain: "example_music", provider_instance: "example_music--Other" }, { provider_domain: "filesystem_local", provider_instance: "filesystem_local--x1" }, { provider_domain: "example_music", provider_instance: "example_music--AbC" }] }
+    tst.eq(ma.sourceText(shared, names), "Filesystem (local disk) [music], Example Music", "another member's instance of a service isn't listed beside the profile's own")
     tst.eq(ma.sourceText({ provider: "example_music--AbC", item_id: "302127" }, names), "Example Music", "a provider item without mappings")
     tst.eq(ma.sourceText({ provider: "library" }, names), "", "nothing to say")
 

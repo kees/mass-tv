@@ -1,0 +1,102 @@
+import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/FocusRing.bs"
+import "pkg:/source/lib/Speech.bs"
+
+const TAB_SPACING = 56
+
+sub init()
+    m.ring = m.top.findNode("ring")
+    m.labels = m.top.findNode("labels")
+    m.boxes = []
+    m.cursor = 0
+    m.hadFocus = false
+    m.spoken = ""
+    ' The row speaks for itself ("Profile, tab 1 of 2, shown").
+    m.top.muteAudioGuide = true
+    m.top.ObserveField("focusedChild", "onFocusChange")
+end sub
+
+sub rebuild()
+    m.labels.removeChildrenIndex(m.labels.getChildCount(), 0)
+    m.boxes = []
+    x = 0
+    for each t in m.top.tabs
+        lbl = CreateObject("roSGNode", "Label")
+        lbl.text = t
+        lbl.font = "font:MediumBoldSystemFont"
+        lbl.translation = [x, 0]
+        m.labels.appendChild(lbl)
+        size = focusring.textSize(lbl)
+        m.boxes.Push({ x: x, w: size.w, h: size.h })
+        x = x + size.w + TAB_SPACING
+    end for
+    render()
+end sub
+
+' Focus arriving puts the cursor on the shown tab.
+sub onFocusChange()
+    focused = m.top.hasFocus()
+    if focused and not m.hadFocus then m.cursor = m.top.shown
+    m.hadFocus = focused
+    render()
+end sub
+
+sub render()
+    focused = m.top.hasFocus()
+    for i = 0 to m.labels.getChildCount() - 1
+        lbl = m.labels.getChild(i)
+        cursor = focused and i = m.cursor
+        ' The shown tab stays blue, a stronger blue under the cursor.
+        if i = m.top.shown and cursor
+            lbl.color = focusring.SELECTED_TEXT
+        else if i = m.top.shown
+            lbl.color = focusring.SELECTED
+        else if cursor
+            lbl.color = focusring.TEXT
+        else
+            lbl.color = focusring.PLAIN_TEXT
+        end if
+    end for
+    if focused and m.cursor < m.boxes.Count()
+        b = m.boxes[m.cursor]
+        focusring.around(m.ring, b.x, 0, b.w, b.h)
+    else
+        m.ring.visible = false
+    end if
+    speak(focused)
+end sub
+
+' Says the cursor's tab when it moves or the row gets focus.
+sub speak(focused as boolean)
+    text = ""
+    tabs = m.top.tabs
+    if focused and util.isArray(tabs) and m.cursor < tabs.Count()
+        parts = [tabs[m.cursor], "tab " + speech.position(m.cursor, tabs.Count())]
+        if m.cursor = m.top.shown then parts.Push("shown")
+        text = speech.join(parts)
+        if text <> m.spoken then log.debug("tabs", "focus", { index: m.cursor, label: tabs[m.cursor] })
+    end if
+    if text <> "" and text <> m.spoken then speech.say(text)
+    m.spoken = text
+end sub
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    count = m.boxes.Count()
+    if key = "left"
+        if m.cursor > 0 then m.cursor = m.cursor - 1
+        render()
+        return true
+    else if key = "right"
+        if m.cursor < count - 1 then m.cursor = m.cursor + 1
+        render()
+        return true
+    else if key = "OK" and m.cursor < count
+        m.top.shown = m.cursor
+        m.top.selected = m.cursor
+        render()
+        return true
+    end if
+    return false
+end function

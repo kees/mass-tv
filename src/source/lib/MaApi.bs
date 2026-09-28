@@ -16,6 +16,46 @@ namespace ma
     ' PRs #6455 and #6457).
     const SORT_NEWEST = "timestamp_added_desc"
 
+    ' The last queue index the player already has (the playing track and
+    ' the next one once handed over), as MA's committed_index works it out
+    ' from the polled queue state; -1 when it has none (MA then moves and
+    ' removes anything). MA won't move or remove items up to it.
+    function committedQueueIndex(q as dynamic) as integer
+        buf = util.get(q, "index_in_buffer")
+        if not util.isNumber(buf) then return -1
+        cur = util.get(q, "current_index")
+        if not util.isNumber(cur) or cur < buf then return buf
+        return cur
+    end function
+
+    ' How many of music/recently_played_items Home's "Recently played" row
+    ' shows (and a Detail page looks through for its own item).
+    const RECENT_LIMIT = 20
+
+    ' The entry of MA's recently played list (music/recently_played_items)
+    ' that is this item, or invalid. The play log is keyed by the identity
+    ' that was logged (a library item or a service's), so an entry matches
+    ' the item's own uri, or one of its provider mappings; removing it
+    ' (music/mark_unplayed) takes the entry, not the item.
+    function recentEntryFor(recent as dynamic, item as dynamic) as dynamic
+        if not util.isArray(recent) or not util.isAA(item) then return invalid
+        mt = ma.mediaTypeOf(item)
+        uri = ma.uriOf(item)
+        maps = util.get(item, "provider_mappings")
+        for each r in recent
+            if util.isAA(r) and ma.mediaTypeOf(r) = mt
+                id = util.str(r.item_id, "")
+                if ma.uriOf(r) = uri then return r
+                if util.isArray(maps)
+                    for each p in maps
+                        if util.isAA(p) and util.str(p.item_id, "") = id and util.str(p.provider_instance, "") = util.str(r.provider, "") then return r
+                    end for
+                end if
+            end if
+        end for
+        return invalid
+    end function
+
     ' Whether any of these tracks carries a date_added (playlist tracks
     ' from a provider that reports when each was added).
     function hasDateAdded(tracks as dynamic) as boolean
@@ -242,6 +282,42 @@ namespace ma
         return out
     end function
 
+    ' The playing stream's quality, from MA's stream details (the source's
+    ' audio_format: content_type, bit_depth, sample_rate, bit_rate) and the
+    ' format the Roku receives (the stream URL's): "FLAC · 16-bit · 44.1
+    ' kHz", "MP3 · 320 kbps · 44.1 kHz → FLAC". Bit depth for lossless
+    ' sources, the bit rate for lossy ones; a content type not known here
+    ' shows as MA names it. "" without stream details.
+    function streamQualityText(audioFormat as dynamic, sentAs = "" as string) as string
+        if not util.isAA(audioFormat) then return ""
+        ct = LCase(util.str(util.get(audioFormat, "content_type"), ""))
+        if ct = "" or ct = "unknown" then return ""
+        name = UCase(ct)
+        lossless = ct = "flac" or ct = "alac" or ct = "wav" or ct = "aiff" or ct = "wv" or ct = "ape" or ct = "dsf" or ct = "dff" or Left(ct, 4) = "pcm_"
+        if Left(ct, 4) = "pcm_" then name = "PCM"
+        parts = [name]
+        depth = util.get(audioFormat, "bit_depth")
+        kbps = util.get(audioFormat, "bit_rate")
+        if lossless and util.isNumber(depth) and depth > 0
+            parts.Push(util.numToStr(depth) + "-bit")
+        else if not lossless and util.isNumber(kbps) and kbps > 0
+            parts.Push(util.numToStr(kbps) + " kbps")
+        end if
+        rate = util.get(audioFormat, "sample_rate")
+        if util.isNumber(rate) and rate > 0
+            khz = rate / 1000.0
+            if rate mod 1000 = 0
+                parts.Push(util.numToStr(Int(khz)) + " kHz")
+            else
+                parts.Push(Str(Int(khz * 10) / 10.0).Trim() + " kHz")
+            end if
+        end if
+        text = parts.Join(" · ")
+        sent = UCase(sentAs)
+        if sent <> "" and sent <> name then text = text + " → " + sent
+        return text
+    end function
+
     ' An item's year as text, "" when MA has none: its own year (a whole
     ' number, or text as the slim queue item keeps it), else the year of
     ' its release date ("2010-01-01T00:00:00+00:00"), else its album's.
@@ -332,16 +408,21 @@ namespace ma
     ' Where an item comes from, for its Detail page: each available
     ' provider mapping's source, named as MA names it for this profile
     ' (names: sourceNames), once each ("<service>", "<service>, Filesystem
-    ' (local disk) [music]"). A source not in names shows as MA gives it
-    ' (its domain). "" when the item has none.
+    ' (local disk) [music]"). Once names are known, a source that isn't
+    ' among them is someone else's (another member's streaming account,
+    ' which MA still lists on a shared library item) and is left out;
+    ' before they are known, a source shows as MA gives it (its domain).
+    ' "" when the item has none.
     function sourceText(item as dynamic, names as dynamic) as string
         parts = []
         seen = {}
+        known = util.isAA(names) and names.Count() > 0
         maps = util.get(item, "provider_mappings")
         if util.isArray(maps)
             for each pm in maps
-                if util.get(pm, "available", true) <> false
-                    inst = util.str(util.get(pm, "provider_instance"), "")
+                inst = util.str(util.get(pm, "provider_instance"), "")
+                mine = not known or names.DoesExist(inst)
+                if util.get(pm, "available", true) <> false and mine
                     name = util.str(util.get(names, inst), "")
                     if name = "" then name = util.str(util.get(pm, "provider_domain"), inst)
                     if name <> "" and not seen.DoesExist(name)
@@ -390,6 +471,29 @@ namespace ma
         if mt = "radio" then return "Radio"
         if mt = "folder" then return ""
         return util.str(util.get(item, "subtitle"), "")
+    end function
+
+    ' A card's second line in a row of mixed kinds (Home's "Recently
+    ' played"): the kind first, "Album · Josh Woodward · 2010", "Track ·
+    ' Josh Woodward · Ashes"; "Artist" and a lone "Playlist" as they are. A
+    ' kind without a name here keeps its plain subtitle.
+    function kindSubtitleOf(item as dynamic) as string
+        names = { album: "Album", track: "Track", playlist: "Playlist", artist: "Artist", podcast: "Podcast", podcast_episode: "Episode", audiobook: "Audiobook", radio: "Radio" }
+        subtitle = ma.subtitleOf(item)
+        kind = names[ma.mediaTypeOf(item)]
+        if kind = invalid then return subtitle
+        if subtitle = "" or subtitle = kind then return kind
+        return kind + " · " + subtitle
+    end function
+
+    ' Whether items (MA media items) are of more than one kind.
+    function mixesKinds(items as dynamic) as boolean
+        if not util.isArray(items) or items.Count() = 0 then return false
+        first = ma.mediaTypeOf(items[0])
+        for each it in items
+            if ma.mediaTypeOf(it) <> first then return true
+        end for
+        return false
     end function
 
     ' Arguments for player_queues/play_media. option: play|replace|next|

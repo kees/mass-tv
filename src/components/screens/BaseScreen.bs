@@ -7,6 +7,7 @@ import "pkg:/source/lib/ApiClient.bs"
 import "pkg:/source/lib/Actions.bs"
 import "pkg:/source/lib/Speech.bs"
 import "pkg:/source/lib/Fonts.bs"
+import "pkg:/source/lib/Hints.bs"
 
 ' Shared by every screen. Each screen observes its own `params` field in
 ' init() and sets m.focusTarget to the node that should regain focus.
@@ -46,18 +47,33 @@ function itemNode(item as object, imageSize = 256 as integer) as object
     return n
 end function
 
-' Opens or plays an item the way OK does everywhere.
+' Opens an item the way OK does everywhere (its page; a track's too, the
+' Play key plays it), or plays what has no page (radio, an episode).
 sub openItem(item as dynamic)
     if not util.isAA(item) then return
     mt = ma.mediaTypeOf(item)
     log.debug("screen", "open " + mt, { uri: ma.uriOf(item), name: util.get(item, "name") })
     if mt = "folder"
         go("browse", { path: util.str(item.path, ""), title: ma.titleOf(item) })
-    else if mt = "album" or mt = "playlist" or mt = "artist" or mt = "podcast" or mt = "audiobook"
+    else if mt = "album" or mt = "playlist" or mt = "artist" or mt = "podcast" or mt = "audiobook" or mt = "track"
         go("detail", { item: item })
     else if ma.isPlayable(item)
         actions.play(item, "play")
     end if
+end sub
+
+' --- focus entering and leaving a screen's blocks ---
+
+' Calls handler (a sub of the screen, no arguments) whenever the focus
+' enters or leaves any of blocks (a button row, a list, a row of cards)
+' or the screen itself: a node's focusedChild changes when the focus
+' moves into or out of anything inside it. The screen's own focusedChild
+' alone misses moves between its blocks.
+sub onFocusMoves(blocks as object, handler as string)
+    m.top.ObserveFieldScoped("focusedChild", handler)
+    for each b in blocks
+        b.ObserveFieldScoped("focusedChild", handler)
+    end for
 end sub
 
 ' --- the screen reader for lists and grids ---
@@ -183,10 +199,15 @@ end sub
 ' --- item options (the More button on Detail pages and Now Playing) ---
 
 ' skip: option ids to leave out, e.g. what a Detail page's buttons already
-' offer ("play", "shuffle", "radio", "favorite").
-sub showItemOptions(item as dynamic, skip = [] as object)
+' offer ("play", "shuffle", "radio", "favorite"). recent: the item's entry
+' in MA's recently played list (ma.recentEntryFor), which adds "Remove from
+' Recently played". fromList: the playlist a track's page was opened
+' from ({ media, sortBy, shuffle }), which adds "Play playlist from here".
+sub showItemOptions(item as dynamic, skip = [] as object, recent = invalid as dynamic, fromList = invalid as dynamic)
     if not util.isAA(item) then return
     m.optItem = item
+    m.optRecent = recent
+    m.optFromList = fromList
     allIds = []
     allLabels = []
     ids = allIds
@@ -199,6 +220,18 @@ sub showItemOptions(item as dynamic, skip = [] as object)
             ids.Push("shuffle")
             labels.Push("Shuffle")
         end if
+        ' A track picked plays alone; this plays its album from it, in the
+        ' album's order (as MA's web UI offers).
+        if mt = "track" and util.isAA(util.get(item, "album"))
+            ids.Push("albumfrom")
+            labels.Push("Play album from here")
+        end if
+        ' The playlist the page was opened from, in the order and shuffle
+        ' it showed.
+        if mt = "track" and util.isAA(fromList) and util.isNonEmptyString(fromList.media)
+            ids.Push("listfrom")
+            labels.Push("Play playlist from here")
+        end if
         if mt = "track" or mt = "artist" or mt = "album" or mt = "playlist"
             ids.Push("radio")
             labels.Push("Endless mix")
@@ -210,6 +243,10 @@ sub showItemOptions(item as dynamic, skip = [] as object)
     else if ma.isPlayable(item)
         ids.Push("favorite")
         labels.Push("Add to favorites")
+    end if
+    if util.isAA(recent)
+        ids.Push("unplayed")
+        labels.Push("Remove from Recently played")
     end if
     addViewOptions(item, ids, labels)
     ' The whole description, which a Detail header cuts to a few lines.
@@ -252,6 +289,13 @@ sub onItemOption(index as integer)
         actions.play(item, "add")
     else if id = "shuffle"
         actions.play(item, "replace", "", true)
+    else if id = "listfrom"
+        c = m.optFromList
+        actions.play(c.media, "replace", ma.uriOf(item), c.shuffle = true, util.str(c.sortBy, ""), item)
+    else if id = "albumfrom"
+        album = util.copyAA(item.album)
+        if util.str(album.media_type, "") = "" then album.media_type = "album"
+        actions.play(album, "replace", ma.uriOf(item), false, "", item)
     else if id = "radio"
         actions.startRadio(item)
     else if id = "favorite"
@@ -260,11 +304,28 @@ sub onItemOption(index as integer)
     else if id = "unfavorite"
         actions.favorite(item, false)
         item.favorite = false
+    else if id = "unplayed"
+        ' MA drops the entry from the user's play log (and one from the
+        ' item's play count); Home reloads its row.
+        entry = m.optRecent
+        log.info("screen", "remove from recently played", { uri: ma.uriOf(entry) })
+        apic.call("music/mark_unplayed", { media_item: entry }, onUnplayed)
     else if id = "artist" or id = "album"
         viewOption(item, id)
     else if id = "about"
         showTextPanel(ma.titleOf(item), ma.descriptionOf(item))
     end if
+end sub
+
+sub onUnplayed(resp as object, ctx as object)
+    if not resp.ok
+        m.global.toast = "Couldn't remove it from Recently played."
+        return
+    end if
+    m.global.toast = "Removed from Recently played"
+    m.global.recentChanged = m.global.recentChanged + 1
+    ' A Detail page keeps the list to find its item: it's no longer there.
+    m.recentList = invalid
 end sub
 
 ' "View artist" and "View album", for the menus of an item and of a queue
@@ -354,6 +415,17 @@ sub closeMenu()
 end sub
 
 ' Removes the menu without refocusing this screen.
+' The screen is being removed: its menu goes, and it stops following the
+' app's state. A removed screen isn't necessarily freed at once (the
+' simulator kept them), and one still observing would go on refetching
+' and speaking behind the screens that replaced it.
+sub releaseScreen()
+    dropMenu()
+    for each f in ["queueState", "nowPlaying", "session", "musicSources", "recentChanged"]
+        m.global.UnobserveFieldScoped(f)
+    end for
+end sub
+
 sub dropMenu()
     if m.choiceMenu = invalid then return
     log.debug("screen", "menu closed", { title: m.choiceMenu.title })

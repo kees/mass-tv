@@ -12,6 +12,12 @@
         <Group id="screens" />
         <NavBar id="nav" visible="false" />
         <NowPlayingBar id="npBar" translation="[0,976]" visible="false" />
+        <!-- The top screen's keyHint, where the Now Playing bar goes, while
+             the bar is hidden (styled as Now Playing's own hint): up to
+             three lines, a key each (about 40 px apiece), centered from
+             just below the lists (Library's ends at 946, a Detail page's
+             tracks at 940) to the bottom. -->
+        <Label id="keyHint" translation="[96,950]" width="1728" height="130" horizAlign="center" vertAlign="center" wrap="true" maxLines="3" color="#5A6270" font="font:SmallestSystemFont" visible="false" />
         <Toast id="toast" translation="[0,860]" />
         <PlayerController id="player" />
         <Timer id="pollTimer" repeat="true" duration="30" />

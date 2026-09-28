@@ -1,0 +1,83 @@
+import "pkg:/source/lib/Util.bs"
+
+' The key hints' words, so every screen says the same thing the same way:
+' "OK: <what it does>", "Play/Pause: tap to <what>, hold to view Now Playing",
+' "Back: <where it goes>", stacked a key per line (Now Playing's own hint,
+' and the band where the Now Playing bar goes while it's hidden), so the
+' OK line, which changes as the cursor moves, reads on its own.
+namespace hints
+
+    const HOLD = "hold to view Now Playing"
+
+    function ok(what as string) as string
+        return "OK: " + what
+    end function
+
+    ' Play/Pause: what a tap does, and the hold (Now Playing).
+    function tap(what as string) as string
+        return "Play/Pause: tap to " + what + ", " + hints.HOLD
+    end function
+
+    function back(what as string) as string
+        return "Back: " + what
+    end function
+
+    function upDown(what as string) as string
+        return "Up/Down: " + what
+    end function
+
+    ' Parts on one line, where a hint has a single line to itself (the
+    ' Lyrics header).
+    function inline(parts as object) as string
+        return hints.join(parts).Replace(Chr(10), " · ")
+    end function
+
+    ' The Lyrics header's line: synced lyrics can be played from a line.
+    function lyrics(synced as boolean) as string
+        parts = [hints.upDown("scroll through the lines")]
+        if synced then parts.Push(hints.ok("play from that line"))
+        return hints.inline(parts)
+    end function
+
+    ' The parts that aren't empty, a line each.
+    function join(parts as object) as string
+        kept = []
+        for each p in parts
+            if util.isNonEmptyString(p) then kept.Push(p)
+        end for
+        return kept.Join(Chr(10))
+    end function
+
+    ' An item in a list: OK opens it, a tap plays it ("album", "track").
+    function listItem(noun as string) as string
+        return hints.join([hints.ok("open the " + noun), hints.tap("play the " + noun)])
+    end function
+
+    ' A track in an album's or playlist's list; fromHere: the profile plays
+    ' the collection (noun: "album", "playlist") from the track.
+    function listTrack(fromHere = false as boolean, noun = "album" as string) as string
+        play = "play this track"
+        if fromHere then play = "play the " + noun + " from this track"
+        return hints.join([hints.ok("open the track"), hints.tap(play), hints.back("go to the buttons")])
+    end function
+
+    ' A page's buttons, while nothing plays (a tap resumes MA's queue):
+    ' okWhat is what OK does on the focused button.
+    function buttons(okWhat as string) as string
+        return hints.join([hints.ok(okWhat), hints.tap("resume the queue")])
+    end function
+
+    ' Now Playing's own line; ended: the queue ran out, and a tap plays its
+    ' last track again.
+    function nowPlaying(ended = false as boolean) as string
+        tapWhat = "pause or resume"
+        if ended then tapWhat = "play it again"
+        return hints.join([hints.tap(tapWhat), "Rewind/Fast Forward: tap to seek 10 s, hold to change track"])
+    end function
+
+    ' Now Playing signed out (Mass TV only a player).
+    function nowPlayingSignedOut() as string
+        return hints.join(["Play/Pause: tap to pause or resume", hints.back("link a Music Assistant profile")])
+    end function
+
+end namespace

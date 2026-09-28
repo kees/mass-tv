@@ -108,6 +108,65 @@ namespace store
         store.writeJson("settings", s)
     end sub
 
+    ' Settings of the active profile (the session's server and user), kept
+    ' per profile under the settings' "profileSettings".
+    function profileKey() as string
+        s = m.global.session
+        return util.str(util.get(s, "server"), "") + "|" + util.str(util.get(s, "userId"), "")
+    end function
+
+    function profileSetting(name as string, fallback as dynamic) as dynamic
+        all = util.get(store.settings(), "profileSettings")
+        v = util.getPath(util.get(all, store.profileKey()), name)
+        if v = invalid then return fallback
+        return v
+    end function
+
+    sub setProfileSetting(name as string, value as dynamic)
+        all = util.get(store.settings(), "profileSettings")
+        if not util.isAA(all) then all = {}
+        key = store.profileKey()
+        mine = util.get(all, key)
+        if not util.isAA(mine) then mine = {}
+        mine[name] = value
+        all[key] = mine
+        store.setSetting("profileSettings", all)
+    end sub
+
+    ' Drops a profile's settings (when it's unlinked).
+    sub forgetProfileSettings(serverUrl as string, userId as string)
+        all = util.get(store.settings(), "profileSettings")
+        if not util.isAA(all) then return
+        all.Delete(serverUrl + "|" + userId)
+        store.setSetting("profileSettings", all)
+    end sub
+
+    ' Whether Play/Pause on a track in an album's or playlist's list plays
+    ' that collection starting with the track (the profile's "Queue
+    ' collection when playing a track"); else the track alone. A Track page's Play and
+    ' other listings (Library's Tracks, Browse) always play the track alone.
+    function listFromPickedTrack() as boolean
+        return store.profileSetting("listFromPickedTrack", false) = true
+    end function
+
+    ' Minutes without a key press before Now Playing turns into its
+    ' screensaver (0: never), from the settings; one minute unless set.
+    function screensaverMinutes() as integer
+        v = store.settings().screensaverMinutes
+        if util.isNumber(v) and v >= 0 then return Int(v)
+        return 1
+    end function
+
+    ' The screensaver setting's choices, in the order Settings steps
+    ' through them (0 is off); a value not among them steps to the first.
+    function nextScreensaverMinutes(minutes as integer) as integer
+        choices = [1, 2, 5, 10, 30, 0]
+        for i = 0 to choices.Count() - 1
+            if choices[i] = minutes then return choices[(i + 1) mod choices.Count()]
+        end for
+        return choices[0]
+    end function
+
     function hintShown(name as string) as boolean
         h = store.readJson("hints", {})
         return util.isAA(h) and h[name] = true

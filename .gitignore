@@ -1,7 +1,7 @@
 node_modules/
 build/
 out/
-upstream/
+/upstream/
 *.zip
 .env
 logs/

@@ -12,7 +12,7 @@ const HEADER_GAP = 16
 
 sub init()
     m.logTag = "lyrics"
-    for each id in ["bgArt", "kind", "kindNote", "lines", "scroller", "message", "loadingIndicator", "scroll", "scrollTo", "follow", "resume", "scrollbar"]
+    for each id in ["bgArt", "kind", "kindNote", "keys", "lines", "scroller", "message", "loadingIndicator", "scroll", "scrollTo", "follow", "resume", "scrollbar"]
         m[id] = m.top.findNode(id)
     end for
     m.follow.ObserveField("fire", "onFollow")
@@ -37,8 +37,10 @@ end sub
 
 ' The header: LYRICS, then (after a gap) whether the lyrics are timed,
 ' the pair centered on the screen; LYRICS alone while there's no note.
-sub setHeaderNote(note as string)
+' keyText: the hint line under them.
+sub setHeaderNote(note as string, keyText = "" as string)
     m.kindNote.text = note
+    m.keys.text = keyText
     kw = m.kind.boundingRect().width
     total = kw
     nw = 0
@@ -152,9 +154,9 @@ sub onLyrics(resp as object, ctx as object)
     buildLines()
     ' What they are, and how to move through them.
     if m.data.synced
-        setHeaderNote("synchronized (Up/Down to scroll, OK to seek)")
+        setHeaderNote("synchronized", hints.lyrics(true))
     else
-        setHeaderNote("no timing info (Up/Down to scroll)")
+        setHeaderNote("no timing info", hints.lyrics(false))
     end if
     m.cursor = 0
     m.following = m.data.synced
@@ -170,7 +172,7 @@ sub onLyrics(resp as object, ctx as object)
         render()
         scrollToLine(0, false)
     end if
-    speech.say(speech.join(["Lyrics", util.str(m.trackText, ""), m.kindNote.text, util.counted(m.data.lines.Count(), "line")]))
+    speech.say(speech.join(["Lyrics", util.str(m.trackText, ""), m.kindNote.text, util.counted(m.data.lines.Count(), "line"), m.keys.text]))
 end sub
 
 sub showMessage(text as string)

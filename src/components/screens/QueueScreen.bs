@@ -111,6 +111,7 @@ sub onItems(resp as object, ctx as dynamic)
     m.empty.visible = root.getChildCount() = 0
     total = util.get(m.global.queueState, "items")
     if util.isNumber(total) then m.count.text = util.counted(total, "item")
+    log.debug("queue", "rows", { shown: root.getChildCount(), from: m.windowStart })
 end sub
 
 function entryAt(idx as integer) as dynamic
@@ -135,10 +136,19 @@ end sub
 sub showQueueOptions(e as object)
     m.optEntry = e
     title = util.str(util.getPath(e, "media_item.name"), "Queue item")
-    ids = ["playnow", "playnext", "remove"]
-    labels = ["Play now", "Play next", "Remove from queue"]
+    ids = ["playnow"]
+    labels = ["Play now"]
+    ' MA doesn't move or remove what the player already has (the playing
+    ' track and the next one once handed over): it ignores a removal and
+    ' refuses a move, so those rows don't offer them.
+    if e.index > ma.committedQueueIndex(m.global.queueState)
+        ids.Append(["playnext", "remove"])
+        labels.Append(["Play next", "Remove from queue"])
+    end if
     mi = util.get(e, "media_item")
     if util.isAA(mi) then addViewOptions(mi, ids, labels)
+    ids.Push("clear")
+    labels.Push("Clear queue")
     m.queueOptIds = ids
     showMenu(title, labels, onQueueOption)
 end sub
@@ -148,14 +158,36 @@ sub onQueueOption(choice as integer)
     id = m.queueOptIds[choice]
     log.debug("queue", "option " + id)
     if id = "playnow"
-        actions.queueCommand("player_queues/play_index", { index: e.queue_item_id })
+        actions.playQueueItem(e.queue_item_id, e.media_item)
     else if id = "playnext"
-        actions.queueCommand("player_queues/move_item", { queue_item_id: e.queue_item_id, pos_shift: 0 })
-        actions.toast("Playing next")
+        editQueue("player_queues/move_item", { queue_item_id: e.queue_item_id, pos_shift: 0 }, "Playing next")
     else if id = "remove"
-        actions.queueCommand("player_queues/delete_item", { item_id_or_index: e.queue_item_id })
-        actions.toast("Removed")
+        editQueue("player_queues/delete_item", { item_id_or_index: e.queue_item_id }, "Removed")
+    else if id = "clear"
+        ' As MA's web UI does: the queue empties and playback stops.
+        editQueue("player_queues/clear", {}, "Queue cleared")
     else if id = "artist" or id = "album"
         viewOption(e.media_item, id)
     end if
+end sub
+
+' A change to the queue's items: the list is read again once MA has made
+' it (the poll's item count doesn't show a move), and the queue polled.
+sub editQueue(command as string, extra as object, done as string)
+    qid = actions.playerQueueId()
+    if qid = "" then return
+    args = { queue_id: qid }
+    args.Append(extra)
+    log.info("queue", command, args)
+    apic.call(command, args, onQueueEdited, { done: done })
+end sub
+
+sub onQueueEdited(resp as object, ctx as object)
+    if not resp.ok
+        actions.toast("Couldn't change the queue.")
+        return
+    end if
+    actions.toast(ctx.done)
+    m.global.pollKick = true
+    refresh()
 end sub

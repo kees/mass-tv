@@ -54,6 +54,74 @@ namespace actions
         if option = "add" then actions.toast("Added to queue")
     end sub
 
+    ' Plays an item already in MA's queue (Queue's Play now): like play,
+    ' the Now Playing bar shows it loading until the stream starts.
+    ' shown: the queue item's track.
+    sub playQueueItem(queueItemId as string, shown as dynamic)
+        actions.startPlayback("player_queues/play_index", { index: queueItemId }, shown)
+    end sub
+
+    ' Starts MA's queue where it is (Play/Pause with nothing loaded): the
+    ' bar shows its current item loading. After the queue ended, the
+    ' track that ended plays again, by its queue item id, which works even
+    ' when MA's queue has lost its current item.
+    sub startQueue()
+        id = actions.endedItemId()
+        if id <> ""
+            actions.playQueueItem(id, util.get(ma.queueItemById(m.global.queueState, id), "media_item"))
+            return
+        end if
+        actions.startPlayback("player_queues/play", {}, util.getPath(m.global.queueState, "current_item.media_item"))
+    end sub
+
+    ' The queue item id of the track that ended the queue (the player's
+    ' "ended": its last track finished with nothing enqueued), else "".
+    function endedItemId() as string
+        np = m.global.nowPlaying
+        if util.get(np, "ended") <> true then return ""
+        return util.str(util.get(np, "queueItemId"), "")
+    end function
+
+    ' Prev (delta -1) or Next (1) after the queue ended: the queue item
+    ' before or after the one that ended, by the queue position MA gave it
+    ' while it was current. False when that position isn't known or there's
+    ' no item there, for MA's own previous or next.
+    function stepEnded(delta as integer) as boolean
+        id = actions.endedItemId()
+        if id = "" then return false
+        q = m.global.queueState
+        idx = util.get(ma.queueItemById(q, id), "index")
+        if not util.isNumber(idx) then return false
+        target = idx + delta
+        count = util.get(q, "items")
+        if target < 0 or (util.isNumber(count) and target >= count) then return false
+        ' The track at that position, when a poll listed it.
+        shown = invalid
+        recent = util.get(q, "recent_items")
+        if util.isArray(recent)
+            for each qi in recent
+                at = util.get(qi, "index")
+                if util.isNumber(at) and at = target then shown = util.get(qi, "media_item")
+            end for
+        end if
+        log.info("actions", "queue ended: play_index", { from: idx, index: target })
+        actions.startPlayback("player_queues/play_index", { index: target }, shown)
+        return true
+    end function
+
+    ' A queue command that starts playback, with play's "Loading…" in the
+    ' Now Playing bar and its wait from MA's answer.
+    sub startPlayback(command as string, extra as object, shown as dynamic)
+        qid = actions.playerQueueId()
+        if qid = "" then return
+        if util.str(util.get(m.global.session, "token"), "") = "" then return
+        args = { queue_id: qid }
+        args.Append(extra)
+        log.info("actions", command, args)
+        m.global.playPending = actions.pendingInfo(shown)
+        apic.call(command, args, actions.onResult, { what: "play", command: command }, { timeoutMs: actions.PLAY_TIMEOUT_MS })
+    end sub
+
     ' What the Now Playing bar shows while a play request waits for MA. The
     ' cover URL is the one track rows use (80 px), so it's usually in
     ' Roku's texture cache already and shows at once.
@@ -135,7 +203,7 @@ namespace actions
         if ctx.what = "play" then m.global.playPending = {}
         log.warn("actions", ctx.what + " failed", { status: resp.status, kind: resp.kind, error: resp.error })
         command = util.str(resp.command, ctx.what)
-        if ctx.what = "play" then command = "player_queues/play_media"
+        if ctx.what = "play" then command = util.str(ctx.command, "player_queues/play_media")
         msg = ma.errorMessage(resp.kind, command, resp.error)
         if msg <> "" then actions.toast(msg)
     end sub

@@ -153,7 +153,7 @@ end sub
 
 sub publish()
     s = m.state
-    np = { status: s.status, error: s.lastError, hasNext: s.pending <> invalid, nextTitle: "", nextArtist: "" }
+    np = { status: s.status, error: s.lastError, ended: s.ended = true, hasNext: s.pending <> invalid, nextTitle: "", nextArtist: "" }
     ' MA enqueues the next track right after each play, so this is known
     ' before the queue poll catches up.
     if s.pending <> invalid
@@ -169,6 +169,8 @@ sub publish()
         np.art = cur.art
         np.duration = cur.duration
         np.isLive = cur.isLive
+        ' What the Roku receives (the stream URL's format).
+        np.format = cur.format
         if cur.stream <> invalid
             np.queueItemId = cur.stream.queueItemId
             np.queueId = cur.stream.queueId

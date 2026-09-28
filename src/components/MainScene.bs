@@ -18,6 +18,9 @@ sub init()
     m.screens = m.top.findNode("screens")
     m.nav = m.top.findNode("nav")
     m.npBar = m.top.findNode("npBar")
+    m.keyHint = m.top.findNode("keyHint")
+    ' The hint takes the bar's place only while the bar is hidden.
+    m.npBar.ObserveField("visible", "updateKeyHint")
     m.toast = m.top.findNode("toast")
     m.player = m.top.findNode("player")
     m.pollTimer = m.top.findNode("pollTimer")
@@ -500,6 +503,8 @@ sub pushScreen(name as string, params as object)
     if s.hasField("profileChosen") then s.ObserveField("profileChosen", "onProfileChosen")
     if s.hasField("setupDone") then s.ObserveField("setupDone", "onSetupDone")
     if s.hasField("ambient") then s.ObserveField("ambient", "onAmbient")
+    if s.hasField("keyHint") then s.ObserveField("keyHint", "updateKeyHint")
+    if s.hasField("focusedItem") then s.ObserveField("focusedItem", "onFocusedItemMoved")
     m.screens.appendChild(s)
     m.stack.Push(s)
     s.params = params
@@ -537,6 +542,7 @@ sub afterScreenChange()
     navIds = { home: "home", library: "library", browse: "browse", search: "search", nowplaying: "nowplaying", queue: "queue", settings: "settings" }
     if navIds.DoesExist(name) then m.nav.current = name
     m.npBar.enabled = chrome and name <> "nowplaying"
+    updateKeyHint()
     updatePolling()
     updateLaunchBeacons(name)
     followSignedOutPlayback()
@@ -545,6 +551,16 @@ end sub
 function signedIn() as boolean
     return util.str(util.get(m.global.session, "token"), "") <> ""
 end function
+
+' The top screen's key hint (a screen below may set its own: only the top
+' one shows), where the Now Playing bar goes while the bar is hidden.
+sub updateKeyHint()
+    top = currentScreen()
+    text = ""
+    if top <> invalid and top.hasField("keyHint") then text = top.keyHint
+    if m.keyHint.text <> text then m.keyHint.text = text
+    m.keyHint.visible = text <> "" and not m.npBar.visible
+end sub
 
 ' The screens for linking and picking a profile: no nav bar, no Now
 ' Playing bar, and playback flips to Now Playing on top of them.
@@ -798,6 +814,9 @@ sub onQueue(resp as object, ctx as dynamic)
         queue_id: q.queue_id
         state: q.state
         current_index: q.current_index
+        ' The last item handed to the player (the next track, once MA
+        ' enqueued it): MA won't move or remove items up to it.
+        index_in_buffer: q.index_in_buffer
         items: q.items
         shuffle_enabled: q.shuffle_enabled
         repeat_mode: q.repeat_mode
@@ -807,6 +826,10 @@ sub onQueue(resp as object, ctx as dynamic)
         next_item: slimQueueItem(q.next_item)
         fetchedAt: util.nowMs()
     }
+    ' Where the current item sits in MA's queue (its own "index" isn't
+    ' filled in), so Prev and Next still find its neighbors after the
+    ' queue ended and MA's queue lost its current item (actions.stepEnded).
+    if util.isAA(slim.current_item) and util.isNumber(q.current_index) then slim.current_item.index = q.current_index
     prev = m.global.queueState
     slim.recent_items = recentQueueItems(slim, util.get(prev, "recent_items"))
     if util.str(util.getPath(prev, "current_item.queue_item_id"), "") <> util.str(util.getPath(slim, "current_item.queue_item_id"), "")
@@ -832,6 +855,10 @@ function slimQueueItem(qi as dynamic) as dynamic
     if not util.isAA(qi) then return invalid
     mi = qi.media_item
     out = { queue_item_id: qi.queue_item_id, name: qi.name, duration: qi.duration, image: qi.image }
+    ' The source's format, for Now Playing's quality line (MA fills in
+    ' stream details once it streams the item).
+    af = util.getPath(qi, "streamdetails.audio_format")
+    if util.isAA(af) then out.audio_format = { content_type: af.content_type, bit_depth: af.bit_depth, sample_rate: af.sample_rate, bit_rate: af.bit_rate }
     if util.isAA(mi)
         ' The year comes from the track's metadata, which isn't kept (the
         ' playing bar's "· 2010"), else its album's (albumYear).
@@ -901,8 +928,14 @@ function recentQueueItems(slim as object, older as dynamic) as object
         if util.isAA(qi) and out.Count() < RECENT_QUEUE_ITEMS
             id = util.str(util.get(qi, "queue_item_id"), "")
             if id <> "" and not seen.DoesExist(id)
-                seen[id] = true
+                seen[id] = out.Count()
                 out.Push(qi)
+            else if id <> ""
+                ' The newer copy keeps the queue position and stream format
+                ' an older poll saw.
+                kept = out[seen[id]]
+                if util.get(kept, "index") = invalid and util.isNumber(util.get(qi, "index")) then kept.index = qi.index
+                if util.get(kept, "audio_format") = invalid and util.isAA(util.get(qi, "audio_format")) then kept.audio_format = qi.audio_format
             end if
         end if
     end for
@@ -1078,36 +1111,104 @@ sub globalAction(action as string)
         return
     end if
     if action = "toggle"
-        ' Something loaded: toggle (this is also how MA's keypress/Play
-        ' arrives). Nothing loaded: play the focused item.
-        if loaded
+        ' An item focused in a list, grid, or row of cards, the cursor
+        ' moved there lately: play it (from there, in an album's or
+        ' playlist's list), even over what plays. Otherwise pause or
+        ' resume what's loaded, or start MA's queue: Music Assistant's
+        ' pause and play arrive as this same key (focusMovedRecently).
+        top = currentScreen()
+        item = invalid
+        ctx = invalid
+        if focusOnItem(top) and focusMovedRecently()
+            if top.hasField("focusedItem") then item = top.focusedItem
+            if top.hasField("focusedPlay") then ctx = top.focusedPlay
+        end if
+        ' The focused track, or the focused album, is what's playing: pause
+        ' or resume it rather than start it again.
+        focusedTrack = ""
+        if util.isAA(ctx) then focusedTrack = util.str(ctx.startItem, "")
+        if focusedTrack = "" and ma.mediaTypeOf(item) = "track" then focusedTrack = ma.uriOf(item)
+        playing = playingMediaItem()
+        playingAlbum = ma.mediaTypeOf(item) = "album" and ma.uriOf(item) <> "" and ma.uriOf(item) = ma.uriOf(util.get(playing, "album"))
+        if loaded and ((focusedTrack <> "" and focusedTrack = ma.uriOf(playing)) or playingAlbum)
             m.player.command = "toggle"
-        else
-            top = currentScreen()
-            item = invalid
-            ctx = invalid
-            if top <> invalid and top.hasField("focusedItem") then item = top.focusedItem
-            if top <> invalid and top.hasField("focusedPlay") then ctx = top.focusedPlay
-            if util.isAA(ctx) and util.isNonEmptyString(ctx.media)
-                shown = util.get(ctx, "shown")
-                if not util.isAA(shown) then shown = item
-                actions.play(ctx.media, "replace", util.str(ctx.startItem, ""), util.get(ctx, "shuffle") = true, util.str(ctx.sortBy, ""), shown)
-            else if util.isAA(item) and ma.isPlayable(item)
-                actions.play(item, "replace")
-            else if status = "idle" or status = "stopped" or status = "error"
-                actions.queueCommand("player_queues/play")
-            end if
+        else if util.isAA(ctx) and util.isNonEmptyString(ctx.media)
+            shown = util.get(ctx, "shown")
+            if not util.isAA(shown) then shown = item
+            actions.play(ctx.media, "replace", util.str(ctx.startItem, ""), util.get(ctx, "shuffle") = true, util.str(ctx.sortBy, ""), shown)
+        else if util.isAA(item) and ma.isPlayable(item)
+            ' A track plays now, what was queued after still following (as
+            ' its page's Play); anything else replaces the queue.
+            option = "replace"
+            if ma.mediaTypeOf(item) = "track" then option = "play"
+            actions.play(item, option)
+        else if loaded
+            m.player.command = "toggle"
+        else if status = "idle" or status = "stopped" or status = "error"
+            actions.startQueue()
         end if
     else if action = "seekBack"
         if loaded then startSeek(-keys.SEEK_STEP)
     else if action = "seekForward"
         if loaded then startSeek(keys.SEEK_STEP)
     else if action = "next"
-        actions.queueCommand("player_queues/next")
+        if not actions.stepEnded(1) then actions.queueCommand("player_queues/next")
     else if action = "previous"
-        actions.queueCommand("player_queues/previous")
+        if not actions.stepEnded(-1) then actions.queueCommand("player_queues/previous")
     end if
 end sub
+
+' The track the Roku is playing (its queue item's, else MA's current
+' one), or invalid.
+function playingMediaItem() as dynamic
+    q = m.global.queueState
+    id = util.str(util.get(m.global.nowPlaying, "queueItemId"), "")
+    qi = invalid
+    if id <> "" then qi = ma.queueItemById(q, id)
+    if not util.isAA(qi) then qi = util.get(q, "current_item")
+    return util.get(qi, "media_item")
+end function
+
+' How long a cursor move keeps the Play key playing the focused item.
+const FOCUS_FRESH_MS = 60000
+
+' A screen's focused item changed. Counted as a person moving the cursor
+' only right after a key press: a screen setting its first focus on its
+' own (at launch, or when Music Assistant launched the app) isn't one.
+sub onFocusedItemMoved()
+    if m.deviceInfo = invalid then m.deviceInfo = CreateObject("roDeviceInfo")
+    if m.deviceInfo.TimeSinceLastKeypress() <= 1 then m.focusMovedAt = util.nowMs()
+end sub
+
+' Whether a person moved the cursor within FOCUS_FRESH_MS. Music
+' Assistant pauses and resumes a Roku by pressing its Play key over ECP,
+' which the app can't tell from the remote's, so a Play with no recent
+' cursor move pauses or resumes instead of playing the focused item.
+function focusMovedRecently() as boolean
+    if m.focusMovedAt = invalid then return false
+    return util.nowMs() - m.focusMovedAt < FOCUS_FRESH_MS
+end function
+
+' Whether the focus is on an item of the screen's lists, grids, or rows
+' of cards (not its buttons, the nav bar, or a menu), where the Play key
+' plays the item. Not on Now Playing, Queue, or Lyrics: their lists are
+' what plays, and the key pauses and resumes there.
+function focusOnItem(top as dynamic) as boolean
+    if top = invalid or not top.isInFocusChain() then return false
+    name = currentScreenName()
+    if name = "nowplaying" or name = "queue" or name = "lyrics" then return false
+    ' Down the focus chain to the node that has the focus; a menu or text
+    ' panel open over the screen isn't one of its items.
+    n = top
+    for i = 0 to 40
+        c = n.focusedChild
+        if c = invalid or c.isSameNode(n) then exit for
+        n = c
+        if n.subtype() = "OptionsMenu" or n.subtype() = "TextPanel" then return false
+    end for
+    kind = n.subtype()
+    return kind = "RowList" or kind = "MarkupList" or kind = "MarkupGrid"
+end function
 
 ' Play/Pause held: Now Playing, pushed over the current screen so Back
 ' returns to it just as it was (the screen and its focus stay beneath).

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A row of tabs, drawn like Library's: text labels, the shown tab blue
+     (the "selected" idiom), the cursor white in the focus ring while the
+     row has focus. Left/Right move the cursor, OK shows its tab (tab-like
+     rows switch on OK); Up/Down aren't consumed.
+
+     tabs      array of labels
+     shown     the shown tab (input and output)
+     selected  output: the tab just shown with OK (alwaysNotify) -->
+<component name="TabRow" extends="Group">
+    <interface>
+        <field id="tabs" type="array" onChange="rebuild" />
+        <field id="shown" type="integer" value="0" onChange="render" />
+        <field id="selected" type="integer" alwaysNotify="true" />
+    </interface>
+    <children>
+        <Poster id="ring" uri="pkg:/images/focus_ring.9.png" visible="false" />
+        <Group id="labels" />
+    </children>
+</component>

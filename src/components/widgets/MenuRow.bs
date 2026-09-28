@@ -1,10 +1,18 @@
 import "pkg:/source/lib/FocusRing.bs"
 import "pkg:/source/lib/Fonts.bs"
 
+' The label's left edge: after the row's padding, or after the checkbox.
+const LABEL_X = 24
+const BOX_LABEL_X = 70
+
 sub init()
     m.pill = m.top.findNode("pill")
     m.bg = m.top.findNode("bg")
     m.label = m.top.findNode("label")
+    m.box = m.top.findNode("box")
+    m.boxFill = m.top.findNode("boxFill")
+    m.boxCheck = m.top.findNode("boxCheck")
+    m.boxEdges = [m.top.findNode("boxTop"), m.top.findNode("boxBottom"), m.top.findNode("boxLeft"), m.top.findNode("boxRight")]
 end sub
 
 sub onContent()
@@ -16,8 +24,16 @@ sub onSize()
     m.pill.height = m.top.height
     m.bg.width = m.top.width
     m.bg.height = m.top.height
-    m.label.width = m.top.width - 48
     m.label.height = m.top.height
+    layoutLabel()
+end sub
+
+sub layoutLabel()
+    x = LABEL_X
+    if m.box.visible then x = BOX_LABEL_X
+    m.label.translation = [x, 0]
+    m.label.width = m.top.width - x - LABEL_X
+    m.box.translation = [LABEL_X, (m.top.height - 30) / 2]
 end sub
 
 sub render()
@@ -32,6 +48,25 @@ sub render()
     plain = c.hasField("plain") and c.plain = true
     m.pill.visible = not plain
     under = f > 0.5
+    ' A checkbox row: filled blue with a check when checked, else an
+    ' outline, light, and white under the ring.
+    isBox = c.hasField("checked")
+    if isBox <> m.box.visible
+        m.box.visible = isBox
+        layoutLabel()
+    end if
+    if isBox
+        checked = c.checked = true
+        edge = focusring.PILL_TEXT
+        if under then edge = focusring.TEXT
+        if checked then edge = focusring.SELECTED
+        for each e in m.boxEdges
+            e.color = edge
+        end for
+        m.boxFill.color = focusring.SELECTED
+        m.boxFill.visible = checked
+        m.boxCheck.visible = checked
+    end if
     if chosen and under
         m.label.color = focusring.SELECTED_TEXT
     else if chosen

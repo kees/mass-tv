@@ -6,7 +6,9 @@
      row rests on a pill with light text, so it reads as something to
      press; focus draws the gray fill in the blue ring over it. Colors
      follow FocusRing.bs: white under the ring; blue if chosen, a stronger
-     blue under the ring. -->
+     blue under the ring. A content node with a `checked` field is a
+     checkbox row: a box at the left, filled blue with a check mark when
+     checked, an outline when not; the label moves right of it. -->
 <component name="MenuRow" extends="Group">
     <interface>
         <field id="itemContent" type="node" onChange="onContent" />
@@ -20,5 +22,16 @@
         <Poster id="pill" uri="pkg:/images/pill.9.png" />
         <Poster id="bg" uri="pkg:/images/focus_row.9.png" opacity="0" />
         <Label id="label" translation="[24,0]" vertAlign="center" font="font:MediumSystemFont" />
+        <!-- The checkbox, 30 px square; its outline is four bars that
+             overlap at the corners (edges meeting exactly leave seams at
+             720p). -->
+        <Group id="box" translation="[24,17]" visible="false">
+            <Rectangle id="boxFill" width="30" height="30" />
+            <Rectangle id="boxTop" width="30" height="3" />
+            <Rectangle id="boxBottom" translation="[0,27]" width="30" height="3" />
+            <Rectangle id="boxLeft" width="3" height="30" />
+            <Rectangle id="boxRight" translation="[27,0]" width="3" height="30" />
+            <Label id="boxCheck" width="30" height="30" horizAlign="center" vertAlign="center" text="✓" color="#FFFFFF" font="font:SmallBoldSystemFont" />
+        </Group>
     </children>
 </component>

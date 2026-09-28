@@ -3,12 +3,15 @@
      is on its way. Appears only after a short delay (fast replies don't
      flash it) and says so when the reply is slow.
 
-     active   input; true from sending the request until its reply
-     text     label while waiting (default "Loading…") -->
+     active    input; true from sending the request until its reply
+     text      label while waiting (default "Loading…")
+     centerIn  optional width: the spinner and text centered in it (from
+               the indicator's own x); 0 (default) starts them at its x -->
 <component name="LoadingIndicator" extends="Group">
     <interface>
         <field id="active" type="boolean" value="false" onChange="onActive" />
         <field id="text" type="string" value="Loading…" />
+        <field id="centerIn" type="float" value="0" />
     </interface>
     <children>
         <Group id="body" visible="false">

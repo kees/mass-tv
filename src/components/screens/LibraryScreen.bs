@@ -107,8 +107,8 @@ sub init()
     m.listTotal = {}
     m.top.ObserveField("params", "onParams")
     ' The ring shows only while the tab row has focus (Up to the nav bar
-    ' leaves the shown tab just blue).
-    m.top.ObserveField("focusedChild", "onFocusChange")
+    ' leaves the shown tab just blue); the key hint follows the list.
+    onFocusMoves([m.tabsGroup, m.letterRow, m.grid, m.list], "onFocusChange")
     ' Down from the nav bar aims the tab row's cursor under the nav cursor.
     m.top.ObserveField("aimX", "onAimX")
 end sub
@@ -130,10 +130,26 @@ sub onAimX()
 end sub
 
 sub onFocusChange()
+    updateListHint()
     focused = m.tabsGroup.hasFocus()
     if focused = m.tabsFocused then return
     m.tabsFocused = focused
     renderTabs()
+end sub
+
+' The key hint, in List view with the list focused: OK opens the focused
+' item, a tap plays it. None in Grid view, on the tabs, or the letters.
+sub updateListHint()
+    hint = ""
+    if m.list.isInFocusChain()
+        kinds = { playlist: "playlist", album: "album", artist: "artist", track: "track" }
+        noun = kinds[ma.mediaTypeOf(itemAt(focusIndex()))]
+        ' A placeholder whose page hasn't loaded: the tab's kind.
+        tabKinds = { playlists: "playlist", albums: "album", artists: "artist", tracks: "track" }
+        if noun = invalid then noun = tabKinds[m.tabs[m.tabIndex].id]
+        if noun <> invalid then hint = hints.listItem(noun)
+    end if
+    if m.top.keyHint <> hint then m.top.keyHint = hint
 end sub
 
 ' "grid" or "list" for a tab: the stored choice, else Tracks as a list
@@ -650,6 +666,7 @@ end function
 sub onFocused()
     focus = focusIndex()
     m.top.focusedItem = itemAt(focus)
+    updateListHint()
     topUp(focus)
     loadPages(focus)
 end sub
@@ -674,11 +691,7 @@ sub onSelected()
     item = itemAt(currentView().itemSelected)
     ' A placeholder whose page hasn't loaded yet.
     if item = invalid then return
-    if ma.mediaTypeOf(item) = "track"
-        actions.play(item, "play")
-    else
-        openItem(item)
-    end if
+    openItem(item)
 end sub
 
 ' --- library options (on the tab row) ---
@@ -695,12 +708,12 @@ sub showLibraryOptions()
     menu = CreateObject("roSGNode", "OptionsMenu")
     menu.title = "Sort " + m.tabs[m.tabIndex].label
     ' Size for both directions' labels, which Reverse switches between.
-    hints = []
+    sizes = []
     for each id in librarysort.fieldsFor(m.tabs[m.tabIndex].id)
-        hints.Push(librarysort.describe(id, false))
-        hints.Push(librarysort.describe(id, true))
+        sizes.Push(librarysort.describe(id, false))
+        sizes.Push(librarysort.describe(id, true))
     end for
-    menu.sizeHints = hints
+    menu.sizeHints = sizes
     menu.items = libraryOptionLabels()
     menu.chosen = libraryOptionsChosen()
     menu.ObserveField("selected", "onLibraryOption")

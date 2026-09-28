@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Full now-playing view with transport controls. After a minute without
-     key presses it switches to a burn-in-safe ambient view (art slowly
-     drifting); any key returns. -->
+<!-- Full now-playing view with transport controls. After a while without
+     key presses (Settings' "Now Playing screensaver") it switches to a
+     burn-in-safe ambient view (art slowly drifting); any key returns. -->
 <component name="NowPlayingScreen" extends="BaseScreen">
     <interface>
         <field id="seekPreview" type="float" value="-1" onChange="render" />
@@ -25,13 +25,15 @@
             <Rectangle id="barFill" translation="[672,330]" width="0" height="8" color="#5A8DEE" />
             <Label id="elapsed" translation="[672,350]" width="300" color="#9A9FB0" font="font:SmallSystemFont" />
             <Label id="remaining" translation="[1524,350]" width="300" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" />
+            <!-- The stream's quality, between the times. -->
+            <Label id="quality" translation="[972,350]" width="552" horizAlign="center" color="#6E7585" font="font:SmallSystemFont" />
             <!-- Two rows: playback (Prev, Play/Pause, Next, Shuffle,
-                 Repeat), then the playing track's (Favorite, Lyrics,
+                 Repeat, Favorite), then where to go (Queue, Lyrics,
                  More); Up/Down move between them. -->
             <ButtonRow id="transport" translation="[672,420]" minWidth="110" spacing="8" />
             <ButtonRow id="actions" translation="[672,500]" minWidth="110" spacing="8" />
             <Label id="upNext" translation="[672,600]" width="1152" color="#9A9FB0" font="font:SmallSystemFont" />
-            <Label id="hint" translation="[96,700]" width="1728" horizAlign="center" color="#5A6270" font="font:SmallestSystemFont" />
+            <Label id="hint" translation="[96,700]" width="1728" horizAlign="center" wrap="true" color="#5A6270" font="font:SmallestSystemFont" />
         </Group>
         <!-- Screen coordinates: the group undoes the screen's 96 px offset
              below the (hidden) nav bar. The 560 px art plus its caption
@@ -45,6 +47,8 @@
             <Vector2DFieldInterpolator id="driftArt" key="[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]" keyValue="[[40,30],[700,440],[1320,120],[900,30],[40,380],[480,440],[1320,440],[1100,30],[40,30]]" fieldToInterp="ambientArt.translation" />
             <Vector2DFieldInterpolator id="driftText" key="[0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0]" keyValue="[[40,600],[700,1010],[1320,690],[900,600],[40,950],[480,1010],[1320,1010],[1100,600],[40,600]]" fieldToInterp="ambientText.translation" />
         </Animation>
+        <!-- The screensaver's wait; its duration comes from Settings'
+             "Now Playing screensaver" (off: never started). -->
         <Timer id="idleTimer" duration="60" repeat="false" />
     </children>
 </component>

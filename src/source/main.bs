@@ -102,6 +102,9 @@ sub setupGlobals(g as object, args as dynamic)
     g.AddField("toast", "string", true)
     g.AddField("currentScreen", "string", false)
     g.AddField("pollKick", "boolean", true)
+    ' Counts removals from the recently played list (a Detail page's More
+    ' menu), so Home reloads its row.
+    g.AddField("recentChanged", "integer", false)
     g.AddFields({
         debugBuild: debugBuild
         logLevel: level

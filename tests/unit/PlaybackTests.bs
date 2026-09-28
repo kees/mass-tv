@@ -101,11 +101,27 @@ sub playbackTests()
     tst.eq(r.state.status, "idle", "held queue does not advance")
     r = playback.reduce(r.state, { type: "deeplink", result: { action: "skipToQueued" } })
     tst.eq(r.state.current.title, "Song q4", "skip to queued plays it")
+    tst.ok(not r.state.ended, "a new track clears ended")
+
+    ' The last track finishes with nothing enqueued: the queue ended, and
+    ' the track stays for Now Playing.
+    tst.ok(not r.state.ended, "not ended while playing")
+    r = playback.reduce(r.state, { type: "node", nodeState: "finished" })
+    tst.eq(r.state.status, "idle", "the queue's end is idle")
+    tst.ok(r.state.ended, "the queue's end is marked")
+    tst.eq(r.state.current.title, "Song q4", "the ended track is kept")
+    ' MA asked for the next track but sent none, with nothing enqueued.
+    t = playback.reduce(fin.state, { type: "deeplink", result: { action: "stop", media: invalid, holdQueue: false } })
+    t = playback.reduce(t.state, { type: "deeplink", result: pbMedia("q5") })
+    t.state.awaitingNext = true
+    t = playback.reduce(t.state, { type: "nextTimeout" })
+    tst.ok(t.state.ended, "no next track and none enqueued: ended")
 
     ' Stop.
     r = playback.reduce(r.state, { type: "deeplink", result: deeplink.parse({ u: " ", t: "a" }, []) })
     tst.eq(pbEffects(r.effects), "stop,changed", "stop")
     tst.eq(r.state.current, invalid, "cleared")
+    tst.ok(not r.state.ended, "a stop clears ended")
     tst.eq(playback.toggleEffect(r.state), "", "nothing to toggle")
 end sub
 

@@ -1,6 +1,9 @@
+import "pkg:/source/lib/Store.bs"
+
 sub init()
     m.logTag = "nowplaying"
-    for each id in ["bgArt", "chrome", "art", "status", "modes", "title", "artist", "album", "barFill", "elapsed", "remaining", "transport", "actions", "upNext", "hint", "ambient", "ambientArt", "ambientText", "drift", "idleTimer"]
+    m.idleSeconds = 0
+    for each id in ["bgArt", "chrome", "art", "status", "modes", "title", "artist", "album", "barFill", "elapsed", "remaining", "quality", "transport", "actions", "upNext", "hint", "ambient", "ambientArt", "ambientText", "drift", "idleTimer"]
         m[id] = m.top.findNode(id)
     end for
     m.barWidth = m.top.findNode("barTrack").width
@@ -20,7 +23,7 @@ sub init()
     ' Not "", so the first render also sets up a missing cover.
     m.lastArt = "(none yet)"
     m.top.ObserveField("params", "onParams")
-    ' Back from a screen on top (Lyrics): the idle minute starts over.
+    ' Back from a screen on top (Lyrics): the idle time starts over.
     m.top.ObserveField("visible", "onVisible")
 end sub
 
@@ -29,11 +32,22 @@ sub onParams()
     for i = 0 to m.transportIds.Count() - 1
         if m.transportIds[i] = "toggle" then m.transport.focusIndex = i
     end for
-    m.idleTimer.control = "start"
+    loadIdleTime()
+    resetIdle()
 end sub
 
 sub onVisible()
-    if m.top.visible then resetIdle()
+    if not m.top.visible then return
+    ' The screensaver setting may have changed in Settings meanwhile.
+    loadIdleTime()
+    resetIdle()
+end sub
+
+' How long without a key press before the screensaver (0: never), from
+' the settings.
+sub loadIdleTime()
+    m.idleSeconds = store.screensaverMinutes() * 60
+    if m.idleSeconds > 0 then m.idleTimer.duration = m.idleSeconds
 end sub
 
 ' Signed out (music MA started before anyone signed in), Mass TV is only a
@@ -75,6 +89,10 @@ sub render()
         statusText = "LOADING"
     else if status = "error"
         statusText = "CAN'T PLAY THIS TRACK"
+    else if status = "idle" and util.get(np, "ended") = true
+        ' The queue ran out: its last track stays shown, and Play, Prev,
+        ' and Next work from it (actions.startQueue, actions.stepEnded).
+        statusText = "QUEUE ENDED"
     else if status = "idle" or status = "stopped"
         statusText = "NOTHING PLAYING"
         if title = ""
@@ -127,6 +145,14 @@ sub render()
         m.elapsed.text = util.formatDuration(shown)
         m.remaining.text = ""
     end if
+    ' The source's format from MA's stream details for the item playing,
+    ' and the format the Roku receives when it differs.
+    quality = ""
+    if util.isAA(cur) and np <> invalid and util.str(np.status, "") <> "stopped" then quality = ma.streamQualityText(util.get(cur, "audio_format"), util.str(util.get(np, "format"), ""))
+    if m.quality.text <> quality
+        m.quality.text = quality
+        log.debug("nowplaying", "quality", { text: quality })
+    end if
 
     ' The track MA enqueued on the player is authoritative and immediate; the
     ' polled queue lags a track change by up to one poll, so it's only used
@@ -162,20 +188,21 @@ sub render()
     ' Size hints keep each button in place when its label changes.
     isIn = signedIn()
     if isIn
-        m.transportIds = ["previous", "toggle", "next", "shuffle", "repeat"]
-        transportLabels = ["Prev", playLabel, "Next", "Shuffle", repeatLabel]
-        transportHints = [[], ["Play", "Pause"], [], [], ["Repeat", "Repeat all", "Repeat one"]]
-        transportActive = [false, false, false, shuffleOn, rep <> "off"]
         ' "Favorite", blue when on: the same switch as on Detail pages.
-        m.actionIds = ["favorite", "lyrics", "more"]
-        actionLabels = ["Favorite", "Lyrics", "More"]
+        m.transportIds = ["previous", "toggle", "next", "shuffle", "repeat", "favorite"]
+        transportLabels = ["Prev", playLabel, "Next", "Shuffle", repeatLabel, "Favorite"]
+        transportHints = [[], ["Play", "Pause"], [], [], ["Repeat", "Repeat all", "Repeat one"], []]
+        transportActive = [false, false, false, shuffleOn, rep <> "off", liked]
+        m.actionIds = ["queue", "lyrics", "more"]
+        actionLabels = ["Queue", "Lyrics", "More"]
         actionHints = [[], [], []]
-        actionActive = [liked, false, false]
+        actionActive = [false, false, false]
         ' Lyrics and More act on the playing track: greyed until something
-        ' is loaded (MA's queue keeps its last item after a stop).
-        loaded = status = "playing" or status = "paused" or status = "loading"
+        ' is loaded (MA's queue keeps its last item after a stop), but kept
+        ' for the track that ended the queue.
+        loaded = status = "playing" or status = "paused" or status = "loading" or util.get(np, "ended") = true
         actionDisabled = [false, not loaded, not loaded]
-        m.hint.text = "Play/Pause: tap to toggle, hold anywhere for Now Playing · Rewind/Fast Forward: tap to seek 10 s, hold to change track"
+        m.hint.text = hints.nowPlaying(status = "idle" and util.get(np, "ended") = true)
     else
         ' Signed out, Mass TV is only a player: just Play/Pause.
         m.transportIds = ["toggle"]
@@ -187,7 +214,7 @@ sub render()
         actionHints = []
         actionActive = []
         actionDisabled = []
-        m.hint.text = "Play/Pause toggles · Back to link a Music Assistant profile"
+        m.hint.text = hints.nowPlayingSignedOut()
     end if
     ' Only when signing in or out changes the buttons: new hints rebuild
     ' the rows.
@@ -251,16 +278,16 @@ sub runButton(id as string)
     q = m.global.queueState
     log.debug("nowplaying", "button " + id)
     if id = "previous"
-        actions.queueCommand("player_queues/previous")
+        if not actions.stepEnded(-1) then actions.queueCommand("player_queues/previous")
     else if id = "toggle"
         status = util.str(util.get(m.global.nowPlaying, "status"), "idle")
         if status = "playing" or status = "paused" or status = "loading"
             m.global.player.command = "toggle"
         else
-            actions.queueCommand("player_queues/play")
+            actions.startQueue()
         end if
     else if id = "next"
-        actions.queueCommand("player_queues/next")
+        if not actions.stepEnded(1) then actions.queueCommand("player_queues/next")
     else if id = "shuffle"
         actions.queueCommand("player_queues/shuffle", { shuffle_enabled: not (util.get(q, "shuffle_enabled", false) = true) })
     else if id = "repeat"
@@ -271,11 +298,16 @@ sub runButton(id as string)
     else if id = "favorite"
         mi = util.get(playingQueueItem(), "media_item")
         if util.isAA(mi) then actions.favorite(mi, not (mi.favorite = true))
+    else if id = "queue"
+        ' On top of Now Playing, like Lyrics: Back comes back here.
+        go("queue", {})
     else if id = "lyrics"
         go("lyrics", {})
     else if id = "more"
         ' The playing track's options, minus what this screen's buttons do
-        ' or what makes no sense for the playing track.
+        ' or what makes no sense for the playing track. "Play album from
+        ' here" replaces the queue with its album from this track, which
+        ' starts the track over.
         mi = util.get(playingQueueItem(), "media_item")
         if util.isAA(mi)
             showItemOptions(mi, ["play", "next", "add", "favorite"])
@@ -301,7 +333,7 @@ end function
 sub enterAmbient()
     if m.ambientOn then return
     ' Not over an open menu or panel, or under another screen (Lyrics):
-    ' wait for the next idle minute.
+    ' wait for the next idle time.
     if m.choiceMenu <> invalid or not m.top.visible
         m.idleTimer.control = "start"
         return
@@ -339,7 +371,7 @@ end sub
 
 sub resetIdle()
     m.idleTimer.control = "stop"
-    m.idleTimer.control = "start"
+    if m.idleSeconds > 0 then m.idleTimer.control = "start"
 end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
