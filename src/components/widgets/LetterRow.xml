@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A row of letters for picking a subset of a list sorted by name: "All",
+     "#" (a digit or symbol first), then A to Z (source/lib/Letters.bs).
+     Left/Right move the cursor (wrapping at the ends) and OK picks; Up,
+     Down, and Back are not consumed, so the screen moves focus off the row.
+
+     chosen      the subset shown (its label, blue)
+     selected    output: the label picked with OK
+     aimX        set before giving the row focus: the x (in the row's
+                 parent's coordinates) the cursor should start nearest; -1
+                 puts it on `chosen`
+     cursorX     output: the cursor's horizontal center, in the row's
+                 parent's coordinates
+     context     what the screen reader says before the letter when the
+                 row gets focus -->
+<component name="LetterRow" extends="Group">
+    <interface>
+        <field id="chosen" type="string" value="All" onChange="render" />
+        <field id="selected" type="string" alwaysNotify="true" />
+        <field id="aimX" type="float" value="-1" alwaysNotify="true" onChange="onAimX" />
+        <field id="cursorX" type="float" value="-1" />
+        <field id="context" type="string" value="Letters" />
+    </interface>
+    <children>
+        <!-- The cursor's focus ring (only while the row has focus), behind
+             the letters. LetterRow.bs lays the letters out and places it. -->
+        <Poster id="ring" uri="pkg:/images/focus_ring.9.png" visible="false" />
+        <Group id="items" />
+    </children>
+</component>

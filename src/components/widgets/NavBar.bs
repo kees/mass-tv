@@ -93,6 +93,9 @@ sub onAimX()
         end if
     end if
     log.debug("nav", "aim up", { x: x, entry: util.str(util.getPath(m.top.entries[m.index], "id"), "") })
+    ' Moved while the bar keeps focus (Back on the bar goes to Home's
+    ' entry): say where the cursor is now.
+    if m.top.hasFocus() then logFocus()
     render()
 end sub
 

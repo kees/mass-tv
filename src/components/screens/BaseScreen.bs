@@ -148,6 +148,9 @@ sub speakList(list as object, firstOnly = false as boolean)
         index = list.itemFocused
         item = content.getChild(index)
         total = content.getChildCount()
+        ' A list whose content holds fewer items than it has (Library's
+        ' placeholders stop short of the end) gives its length here.
+        if util.isAA(m.listTotal) and util.isInteger(m.listTotal[key]) and m.listTotal[key] > 0 then total = m.listTotal[key]
         row = 0
     end if
     if item = invalid then return
@@ -208,15 +211,7 @@ sub showItemOptions(item as dynamic, skip = [] as object)
         ids.Push("favorite")
         labels.Push("Add to favorites")
     end if
-    artists = util.get(item, "artists")
-    if util.isArray(artists) and artists.Count() > 0
-        ids.Push("artist")
-        labels.Push("View artist")
-    end if
-    if util.isAA(util.get(item, "album")) and ma.mediaTypeOf(item) = "track"
-        ids.Push("album")
-        labels.Push("View album")
-    end if
+    addViewOptions(item, ids, labels)
     ' The whole description, which a Detail header cuts to a few lines.
     kind = ma.mediaTypeOf(item)
     if (kind = "artist" or kind = "album") and ma.descriptionOf(item) <> ""
@@ -265,14 +260,35 @@ sub onItemOption(index as integer)
     else if id = "unfavorite"
         actions.favorite(item, false)
         item.favorite = false
-    else if id = "artist"
+    else if id = "artist" or id = "album"
+        viewOption(item, id)
+    else if id = "about"
+        showTextPanel(ma.titleOf(item), ma.descriptionOf(item))
+    end if
+end sub
+
+' "View artist" and "View album", for the menus of an item and of a queue
+' row: adds each one the item has to ids and labels.
+sub addViewOptions(item as dynamic, ids as object, labels as object)
+    artists = util.get(item, "artists")
+    if util.isArray(artists) and artists.Count() > 0
+        ids.Push("artist")
+        labels.Push("View artist")
+    end if
+    if util.isAA(util.get(item, "album")) and ma.mediaTypeOf(item) = "track"
+        ids.Push("album")
+        labels.Push("View album")
+    end if
+end sub
+
+' Opens the item's (first) artist or its album (id "artist" or "album").
+sub viewOption(item as object, id as string)
+    if id = "artist"
         go("detail", { item: item.artists[0] })
     else if id = "album"
         album = item.album
         if album.media_type = invalid then album.media_type = "album"
         go("detail", { item: album })
-    else if id = "about"
-        showTextPanel(ma.titleOf(item), ma.descriptionOf(item))
     end if
 end sub
 

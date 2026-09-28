@@ -35,10 +35,12 @@ import io
 import json
 import math
 import os
+import re
 import socket
 import struct
 import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
 import uuid
@@ -60,8 +62,30 @@ def img(key):
             "remotely_accessible": True, "proxy_id": "p" + key}
 
 
+def sort_name(name):
+    """MA's create_sort_name, simplified: lowercase, accents off, a leading
+    article moved to the end."""
+    s = "".join(c for c in unicodedata.normalize("NFD", name.lower().strip()) if not unicodedata.combining(c))
+    for article in ("the ", "a ", "an "):
+        if s.startswith(article):
+            return s[len(article):] + ", " + article.strip()
+    return s
+
+
+# What MA's anyascii makes of the sort names this fake can't transliterate.
+TRANSLITERATED = {"坂本龍一": "banbenlongyi"}
+
+
+def sort_key(item):
+    """MA's search_sort_name, the key its name order uses: the sort name
+    transliterated to ASCII and cut to a-z and 0-9."""
+    s = TRANSLITERATED.get(item["sort_name"], item["sort_name"])
+    s = s.replace("æ", "ae")
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
 def artist(aid, name):
-    return {"item_id": aid, "provider": PROVIDER, "name": name, "media_type": "artist",
+    return {"item_id": aid, "provider": PROVIDER, "name": name, "sort_name": sort_name(name), "media_type": "artist",
             "uri": "%s://artist/%s" % (PROVIDER, aid), "metadata": {"images": [img("ar" + aid)]}}
 
 
@@ -90,6 +114,14 @@ TRACKS = [
     track("t5", "Starálfur", "a2", "al2", 407),
     track("t6", "andata", "a3", "al3", 285),
 ]
+# Invented lyrics (MA's metadata.lrc_lyrics and lyrics) for the Lyrics
+# screen: synced for t2, plain for t1.
+TRACKS[1]["metadata"] = {
+    "lrc_lyrics": "\n".join("[00:%02d.00]Invented line %d" % (i * 4, i + 1) for i in range(20)),
+    "lyrics": "\n".join("Invented line %d" % (i + 1) for i in range(20)),
+}
+TRACKS[0]["metadata"] = {"lyrics": "An invented verse\nwith a second line\n\nand a second verse"}
+
 # Drone pitch (Hz) per track in the synthetic test media, so a track change
 # is audible (tools/make_test_media.py).
 TONES = {"t1": 165.0, "t2": 220.0, "t3": 294.0, "t4": 392.0, "t5": 523.0, "t6": 131.0}
@@ -105,7 +137,7 @@ ALBUM_TEXTS = {
 ALBUMS = {}
 for aid, name in ALBUM_NAMES.items():
     ts = [t for t in TRACKS if t["album"]["item_id"] == aid]
-    ALBUMS[aid] = {"item_id": aid, "provider": PROVIDER, "name": name, "media_type": "album", "year": 2001,
+    ALBUMS[aid] = {"item_id": aid, "provider": PROVIDER, "name": name, "sort_name": sort_name(name), "media_type": "album", "year": 2001,
                    "uri": "%s://album/%s" % (PROVIDER, aid), "artists": ts[0]["artists"], "favorite": False,
                    "metadata": {"images": [img("al" + aid)], "description": ALBUM_TEXTS[aid]}}
 PLAYLISTS = {
@@ -296,6 +328,9 @@ class FakeMA:
             return None
         if cmd == "auth/logout":
             return None
+        if cmd == "providers":
+            return [{"instance_id": PROVIDER, "domain": "example_music", "name": "Example Music", "type": "music",
+                     "available": True}]
         if cmd == "players/all":
             return [{"player_id": "sonos1", "provider": "sonos", "name": "Kitchen", "available": True},
                     {"player_id": PLAYER_ID, "provider": "roku_media_assistant", "name": "Living Room", "available": True,
@@ -314,8 +349,19 @@ class FakeMA:
                     "playlists": list(PLAYLISTS.values())}.get(kind, [])
             if args.get("favorite"):
                 data = [d for d in data if d.get("favorite")]
+            # MA's name order, for the kinds whose items have sort names.
+            order = args.get("order_by", "sort_name")
+            if kind in ("albums", "artists") and order in ("sort_name", "sort_name_desc"):
+                data = sorted(data, key=sort_key, reverse=order == "sort_name_desc")
             off, lim = int(args.get("offset", 0)), int(args.get("limit", 500))
             return data[off:off + lim]
+        if cmd.startswith("music/") and cmd.endswith("/count"):
+            kind = cmd.split("/")[1]
+            data = {"albums": list(ALBUMS.values()), "artists": list(ARTISTS.values()), "tracks": TRACKS,
+                    "playlists": list(PLAYLISTS.values())}.get(kind, [])
+            if args.get("favorite_only"):
+                data = [d for d in data if d.get("favorite")]
+            return len(data)
         if cmd == "music/browse":
             path = args.get("path") or ""
             if not path or path == "root":
@@ -337,9 +383,16 @@ class FakeMA:
                     if it["uri"] == uri:
                         return it
             raise KeyError(uri)
-        if cmd in ("music/albums/album_tracks", "music/playlists/playlist_tracks", "music/artists/top_tracks"):
+        if cmd == "metadata/get_track_lyrics":
+            # Like MA: [lyrics, lrc_lyrics] for the track given (by its uri
+            # here; MA also looks lyrics up for a library track without).
+            uri = (args.get("track") or {}).get("uri", "")
+            md = next((t.get("metadata") or {} for t in TRACKS if t["uri"] == uri), {})
+            return [md.get("lyrics"), md.get("lrc_lyrics")]
+        if cmd in ("music/albums/album_tracks", "music/playlists/playlist_tracks", "music/artists/top_tracks",
+                   "music/artists/artist_tracks"):
             kind = {"music/albums/album_tracks": "album", "music/playlists/playlist_tracks": "playlist",
-                    "music/artists/top_tracks": "artist"}[cmd]
+                    "music/artists/top_tracks": "artist", "music/artists/artist_tracks": "artist"}[cmd]
             return self.resolve_tracks("%s://%s/%s" % (PROVIDER, kind, args.get("item_id")))
         if cmd == "music/artists/artist_albums":
             return [a for a in ALBUMS.values() if a["artists"][0]["item_id"] == args.get("item_id")]

@@ -1,30 +1,39 @@
 sub init()
     m.logTag = "nowplaying"
-    for each id in ["bgArt", "chrome", "art", "status", "modes", "title", "artist", "album", "barFill", "elapsed", "remaining", "buttons", "upNext", "hint", "ambient", "ambientArt", "ambientText", "drift", "idleTimer"]
+    for each id in ["bgArt", "chrome", "art", "status", "modes", "title", "artist", "album", "barFill", "elapsed", "remaining", "transport", "actions", "upNext", "hint", "ambient", "ambientArt", "ambientText", "drift", "idleTimer"]
         m[id] = m.top.findNode(id)
     end for
     m.barWidth = m.top.findNode("barTrack").width
     ' Set by render: signed out, only the Play/Pause button shows.
-    m.buttonIds = []
-    m.hintCount = -1
-    m.buttons.ObserveField("selected", "onButton")
-    m.buttons.ObserveField("focusIndex", "resetIdle")
+    m.transportIds = []
+    m.actionIds = []
+    m.signedInShown = invalid
+    m.transport.ObserveField("selected", "onTransport")
+    m.actions.ObserveField("selected", "onAction")
+    m.transport.ObserveField("focusIndex", "resetIdle")
+    m.actions.ObserveField("focusIndex", "resetIdle")
     m.idleTimer.ObserveField("fire", "enterAmbient")
     m.global.ObserveFieldScoped("nowPlaying", "render")
     m.global.ObserveFieldScoped("queueState", "render")
-    m.focusTarget = m.buttons
+    m.focusTarget = m.transport
     m.ambientOn = false
     ' Not "", so the first render also sets up a missing cover.
     m.lastArt = "(none yet)"
     m.top.ObserveField("params", "onParams")
+    ' Back from a screen on top (Lyrics): the idle minute starts over.
+    m.top.ObserveField("visible", "onVisible")
 end sub
 
 sub onParams()
     render()
-    for i = 0 to m.buttonIds.Count() - 1
-        if m.buttonIds[i] = "toggle" then m.buttons.focusIndex = i
+    for i = 0 to m.transportIds.Count() - 1
+        if m.transportIds[i] = "toggle" then m.transport.focusIndex = i
     end for
     m.idleTimer.control = "start"
+end sub
+
+sub onVisible()
+    if m.top.visible then resetIdle()
 end sub
 
 ' Signed out (music MA started before anyone signed in), Mass TV is only a
@@ -42,11 +51,11 @@ sub render()
     album = util.str(util.get(np, "album"), "")
     art = util.str(util.get(np, "art"), "")
 
-    ' Prefer the server's queue item when it matches what we're playing: it
-    ' has complete metadata, formatted like the track rows (the stream's
+    ' Prefer the server's queue item for what we're playing: it has
+    ' complete metadata, formatted like the track rows (the stream's
     ' metadata drops the version and uses MA's own artist string).
-    cur = util.get(q, "current_item")
-    if util.isAA(cur) and cur.queue_item_id = util.get(np, "queueItemId")
+    cur = ma.queueItemById(q, util.str(util.get(np, "queueItemId"), ""))
+    if util.isAA(cur)
         mi = cur.media_item
         if util.isAA(mi)
             if ma.titleOf(mi) <> "" then title = ma.titleOf(mi)
@@ -128,7 +137,7 @@ sub render()
         upNext = nextTitle
         nextArtist = util.str(util.get(np, "nextArtist"), "")
         if nextArtist <> "" then upNext = upNext + " · " + nextArtist
-    else if util.isAA(cur) and cur.queue_item_id = util.get(np, "queueItemId")
+    else if util.isAA(cur) and util.str(util.getPath(q, "current_item.queue_item_id"), "") = util.str(cur.queue_item_id, "")
         nxt = util.get(q, "next_item")
         if util.isAA(nxt) then upNext = util.str(nxt.name, "")
     end if
@@ -149,37 +158,51 @@ sub render()
     if rep = "one" then repeatLabel = "Repeat one"
     ' A mode MA adds later shows as MA names it, not as a plain "Repeat".
     if rep <> "off" and rep <> "all" and rep <> "one" then repeatLabel = "Repeat " + rep
-    liked = util.getPath(cur, "media_item.favorite") = true
+    liked = util.getPath(playingQueueItem(), "media_item.favorite") = true
     ' Size hints keep each button in place when its label changes.
-    if signedIn()
+    isIn = signedIn()
+    if isIn
+        m.transportIds = ["previous", "toggle", "next", "shuffle", "repeat"]
+        transportLabels = ["Prev", playLabel, "Next", "Shuffle", repeatLabel]
+        transportHints = [[], ["Play", "Pause"], [], [], ["Repeat", "Repeat all", "Repeat one"]]
+        transportActive = [false, false, false, shuffleOn, rep <> "off"]
         ' "Favorite", blue when on: the same switch as on Detail pages.
-        m.buttonIds = ["previous", "toggle", "next", "shuffle", "repeat", "favorite", "more"]
-        labels = ["Prev", playLabel, "Next", "Shuffle", repeatLabel, "Favorite", "More"]
-        hints = [[], ["Play", "Pause"], [], [], ["Repeat", "Repeat all", "Repeat one"], [], []]
-        active = [false, false, false, shuffleOn, rep <> "off", liked, false]
-        ' More acts on the playing track: greyed until something is
-        ' loaded (MA's queue keeps its last item after a stop).
+        m.actionIds = ["favorite", "lyrics", "more"]
+        actionLabels = ["Favorite", "Lyrics", "More"]
+        actionHints = [[], [], []]
+        actionActive = [liked, false, false]
+        ' Lyrics and More act on the playing track: greyed until something
+        ' is loaded (MA's queue keeps its last item after a stop).
         loaded = status = "playing" or status = "paused" or status = "loading"
-        disabled = [false, false, false, false, false, false, not loaded]
-        m.hint.text = "Play/Pause toggles · Rewind/Fast Forward: tap to seek 10 s, hold to change track"
+        actionDisabled = [false, not loaded, not loaded]
+        m.hint.text = "Play/Pause: tap to toggle, hold anywhere for Now Playing · Rewind/Fast Forward: tap to seek 10 s, hold to change track"
     else
-        m.buttonIds = ["toggle"]
-        labels = [playLabel]
-        hints = [["Play", "Pause"]]
-        active = [false]
-        disabled = [false]
+        ' Signed out, Mass TV is only a player: just Play/Pause.
+        m.transportIds = ["toggle"]
+        transportLabels = [playLabel]
+        transportHints = [["Play", "Pause"]]
+        transportActive = [false]
+        m.actionIds = []
+        actionLabels = []
+        actionHints = []
+        actionActive = []
+        actionDisabled = []
         m.hint.text = "Play/Pause toggles · Back to link a Music Assistant profile"
     end if
-    ' Only when the set of buttons changes: a new hint rebuilds the row.
-    if m.buttonIds.Count() <> m.hintCount
-        m.hintCount = m.buttonIds.Count()
-        m.buttons.sizeHints = hints
+    ' Only when signing in or out changes the buttons: new hints rebuild
+    ' the rows.
+    if m.signedInShown <> isIn
+        m.signedInShown = isIn
+        m.transport.sizeHints = transportHints
+        m.actions.sizeHints = actionHints
+        m.actions.visible = isIn
+        if not isIn and m.actions.isInFocusChain() then focusRow(m.transport)
     end if
-    if not sameLabels(labels)
-        m.buttons.buttons = labels
-    end if
-    m.buttons.active = active
-    m.buttons.disabled = disabled
+    if not sameLabels(m.transport, transportLabels) then m.transport.buttons = transportLabels
+    if not sameLabels(m.actions, actionLabels) then m.actions.buttons = actionLabels
+    m.transport.active = transportActive
+    m.actions.active = actionActive
+    m.actions.disabled = actionDisabled
 
     modes = []
     if shuffleOn then modes.Push("SHUFFLE")
@@ -192,15 +215,18 @@ sub render()
     statusSaid = "now playing"
     if statusText <> "" then statusSaid = LCase(statusText)
     said = speech.join([title, artist, album])
-    m.buttons.context = speech.join([statusSaid, said])
-    if m.saidTrack <> invalid and said <> m.saidTrack and m.buttons.hasFocus() and (status = "playing" or status = "loading")
+    ' Said when the transport row gets focus (the screen opening); the
+    ' second row goes without, since it's reached from the first.
+    m.transport.context = speech.join([statusSaid, said])
+    buttonsFocused = m.transport.hasFocus() or m.actions.hasFocus()
+    if m.saidTrack <> invalid and said <> m.saidTrack and buttonsFocused and (status = "playing" or status = "loading")
         speech.say(speech.join(["now playing", said]), false)
     end if
     m.saidTrack = said
 end sub
 
-function sameLabels(labels as object) as boolean
-    old = m.buttons.buttons
+function sameLabels(row as object, labels as object) as boolean
+    old = row.buttons
     if old = invalid or old.Count() <> labels.Count() then return false
     for i = 0 to labels.Count() - 1
         if old[i] <> labels[i] then return false
@@ -208,8 +234,20 @@ function sameLabels(labels as object) as boolean
     return true
 end function
 
-sub onButton()
-    id = m.buttonIds[m.buttons.selected]
+sub focusRow(row as object)
+    m.focusTarget = row
+    row.setFocus(true)
+end sub
+
+sub onTransport()
+    runButton(m.transportIds[m.transport.selected])
+end sub
+
+sub onAction()
+    runButton(m.actionIds[m.actions.selected])
+end sub
+
+sub runButton(id as string)
     q = m.global.queueState
     log.debug("nowplaying", "button " + id)
     if id = "previous"
@@ -231,20 +269,40 @@ sub onButton()
         if nextMode = invalid then nextMode = "all"
         actions.queueCommand("player_queues/repeat", { repeat_mode: nextMode })
     else if id = "favorite"
-        mi = util.getPath(q, "current_item.media_item")
+        mi = util.get(playingQueueItem(), "media_item")
         if util.isAA(mi) then actions.favorite(mi, not (mi.favorite = true))
+    else if id = "lyrics"
+        go("lyrics", {})
     else if id = "more"
-        ' The current track's options, minus what this screen's buttons do
+        ' The playing track's options, minus what this screen's buttons do
         ' or what makes no sense for the playing track.
-        mi = util.getPath(q, "current_item.media_item")
-        if util.isAA(mi) then showItemOptions(mi, ["play", "next", "add", "favorite"])
+        mi = util.get(playingQueueItem(), "media_item")
+        if util.isAA(mi)
+            showItemOptions(mi, ["play", "next", "add", "favorite"])
+        else
+            ' Music Assistant's queue doesn't list the track yet: say so,
+            ' and ask it again.
+            log.info("nowplaying", "more: playing item not in the queue", { queueItemId: util.get(m.global.nowPlaying, "queueItemId") })
+            actions.toast("Music Assistant hasn't listed this track yet. Try again in a moment.")
+            m.global.pollKick = true
+        end if
     end if
 end sub
 
+' The polled queue's item for what's playing (ma.queueItemById). With no
+' queue item id (a stream not from MA's queue), the queue's current item.
+function playingQueueItem() as dynamic
+    q = m.global.queueState
+    id = util.str(util.get(m.global.nowPlaying, "queueItemId"), "")
+    if id = "" then return util.get(q, "current_item")
+    return ma.queueItemById(q, id)
+end function
+
 sub enterAmbient()
     if m.ambientOn then return
-    ' Not over an open menu or panel: wait for the next idle minute.
-    if m.choiceMenu <> invalid
+    ' Not over an open menu or panel, or under another screen (Lyrics):
+    ' wait for the next idle minute.
+    if m.choiceMenu <> invalid or not m.top.visible
         m.idleTimer.control = "start"
         return
     end if
@@ -276,7 +334,7 @@ sub exitAmbient()
     m.chrome.visible = true
     m.bgArt.opacity = 0.08
     m.top.ambient = false
-    m.buttons.setFocus(true)
+    m.focusTarget.setFocus(true)
 end sub
 
 sub resetIdle()
@@ -291,6 +349,17 @@ function onKeyEvent(key as string, press as boolean) as boolean
         exitAmbient()
         ' Swallow the wake-up press unless it is a transport key.
         return not (key = "play" or key = "rewind" or key = "fastforward" or key = "replay")
+    end if
+    ' Between the two rows of buttons, aimed at the nearest button; Up
+    ' from the first row goes on to the nav bar (MainScene).
+    if key = "down" and m.transport.isInFocusChain() and m.actions.visible
+        aim.moveFocus(m.transport, m.actions)
+        m.focusTarget = m.actions
+        return true
+    else if key = "up" and m.actions.isInFocusChain()
+        aim.moveFocus(m.actions, m.transport)
+        m.focusTarget = m.transport
+        return true
     end if
     return false
 end function

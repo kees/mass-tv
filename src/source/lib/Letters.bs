@@ -1,0 +1,199 @@
+import "pkg:/source/lib/Util.bs"
+
+' Letter subsets of a library listing sorted by name ("All", "#", "A" to
+' "Z"), for the Library's Artists and Albums tabs (widgets/LetterRow).
+'
+' Music Assistant has no "starts with" filter, so a subset is read out of
+' MA's own name order: MA sorts by each item's sort_name, lowercased,
+' transliterated to ASCII (anyascii), and cut to a-z and 0-9. A letter's
+' first item is found by a binary search over the list's offsets
+' (searchStep, a few small requests), its end by another (endStep), and
+' the offsets between are the subset, less any items before its first
+' item (leadingSkip). "All" uses endStep too, for the list's length.
+'
+' The Roku can't transliterate, so an item whose sort name starts with a
+' non-ASCII character (e.g. CJK) can't be placed by itself ("unknown"). It
+' shows in a letter between two items of that letter, where MA's order
+' puts it there, and in a run of unknowns longer than a probe at the
+' subset's end (the search can't see past it); it always shows in "All".
+namespace letters
+    const ALL = "All"
+    const OTHER = "#"
+    ' Items read per probe of the binary search: the first one that can be
+    ' placed decides, so a run of unknowns rarely needs a second look.
+    const PROBE = 8
+
+    ' The row's labels: All, # (a digit or symbol first), then A to Z.
+    function labels() as object
+        out = [letters.ALL, letters.OTHER]
+        for c = Asc("A") to Asc("Z")
+            out.Push(Chr(c))
+        end for
+        return out
+    end function
+
+    ' The subset an item sorts under, from its sort name like MA's sort key:
+    ' ASCII punctuation and spaces are skipped, then a letter gives "A" to
+    ' "Z" and a digit "#". "" when the first other character isn't ASCII
+    ' (MA transliterates it; the Roku can't) or there's nothing to go by.
+    function bucketOf(item as dynamic) as string
+        s = util.str(util.get(item, "sort_name"), "")
+        if s = "" then s = util.str(util.get(item, "name"), "")
+        for i = 1 to Len(s)
+            ch = Mid(s, i, 1)
+            c = Asc(ch)
+            if c >= 97 and c <= 122 then return UCase(ch)
+            if c >= 65 and c <= 90 then return ch
+            if c >= 48 and c <= 57 then return letters.OTHER
+            if c >= 128 then return ""
+        end for
+        return ""
+    end function
+
+    ' A subset's place in name order (A-Z): "#" first, then the letters;
+    ' -1 for "All" or anything else.
+    function rankOf(bucket as string) as integer
+        if bucket = letters.OTHER then return 0
+        if Len(bucket) = 1
+            c = Asc(bucket)
+            if c >= 65 and c <= 90 then return c - 64
+        end if
+        return -1
+    end function
+
+    ' Where an item stands against the chosen subset in the list's order
+    ' (reverse: Z-A): "before", "in", "after", or "unknown".
+    function place(item as dynamic, target as string, reverse as boolean) as string
+        r = letters.rankOf(letters.bucketOf(item))
+        if r < 0 then return "unknown"
+        t = letters.rankOf(target)
+        if r = t then return "in"
+        if (r < t) <> reverse then return "before"
+        return "after"
+    end function
+
+    ' The start search's state: the subset's first item is at an offset in
+    ' [lo, hi] (hi: the list's length).
+    function newSearch(count as integer) as object
+        return { lo: 0, hi: count }
+    end function
+
+    ' The offset to probe next (letters.PROBE items from there), or -1 when
+    ' the search is done and state.lo is where to start reading.
+    function probeAt(state as object) as integer
+        if state.lo >= state.hi then return -1
+        return Int((state.lo + state.hi) / 2)
+    end function
+
+    ' Narrows the search with the items read at offset mid. The first item
+    ' that can be placed decides; items still before the subset move lo past
+    ' it. Anything else (in or after the subset, nothing placeable, or the
+    ' list's end) moves hi to mid, so the start found is never later than
+    ' the subset's first item: reading may begin a little early, and
+    ' filterPage skips what comes before the subset.
+    function searchStep(state as object, mid as integer, items as dynamic, target as string, reverse as boolean) as object
+        out = { lo: state.lo, hi: state.hi }
+        if util.isArray(items)
+            for j = 0 to items.Count() - 1
+                p = letters.place(items[j], target, reverse)
+                if p = "before"
+                    out.lo = mid + j + 1
+                    return out
+                else if p <> "unknown"
+                    out.hi = mid
+                    return out
+                end if
+            end for
+        end if
+        out.hi = mid
+        return out
+    end function
+
+    ' The end search's state: the subset (or, for All, the list) ends at an
+    ' offset in [lo, hi], once hi is known to be past it (bounded). from:
+    ' where the subset starts; guess: an upper bound to try first (MA's
+    ' count, which can count more than the listing holds, or less).
+    function newEndSearch(from as integer, guess as integer) as object
+        if guess < from then guess = from
+        return { lo: from, hi: guess, bounded: false }
+    end function
+
+    ' The offset to probe next (letters.PROBE items from there), or -1 when
+    ' the search is done and state.lo is the end (exclusive). Until hi is
+    ' known to be past the end, the item just before hi is probed: when the
+    ' guess is the list's exact length (MA's count usually is), that one
+    ' probe finds the end.
+    function endProbeAt(state as object) as integer
+        if not state.bounded
+            if state.hi - 1 >= state.lo then return state.hi - 1
+            return state.hi
+        end if
+        if state.lo >= state.hi then return -1
+        return Int((state.lo + state.hi) / 2)
+    end function
+
+    ' Narrows the end search with the items read at offset mid. The first
+    ' item that can be placed decides: one after the subset (or the list's
+    ' end) puts the end at or before mid, so unknowns just after the
+    ' subset's last item are left out; one in or before it moves lo past
+    ' it. A full probe of unknowns counts as inside (they may sit between
+    ' two items of the letter). For All, any item is inside. A hi that
+    ' turns out to be inside doubles until it's past the end. A short probe
+    ' reached the list's end, which bounds the search (for All, it is the
+    ' end).
+    function endStep(state as object, mid as integer, items as dynamic, target as string, reverse as boolean) as object
+        out = { lo: state.lo, hi: state.hi, bounded: state.bounded }
+        ' Where the end is known to be at or after; -1: at or before mid.
+        newLo = -1
+        if util.isArray(items) and items.Count() > 0
+            if target = letters.ALL
+                newLo = mid + items.Count()
+            else
+                p = "unknown"
+                for j = 0 to items.Count() - 1
+                    p = letters.place(items[j], target, reverse)
+                    if p = "in" or p = "before"
+                        newLo = mid + j + 1
+                        exit for
+                    else if p = "after"
+                        exit for
+                    end if
+                end for
+                if newLo < 0 and items.Count() >= letters.PROBE and p = "unknown" then newLo = mid + items.Count()
+            end if
+        end if
+        if newLo < 0
+            out.hi = mid
+            out.bounded = true
+            if out.lo > out.hi then out.lo = out.hi
+        else
+            out.lo = newLo
+            if not out.bounded
+                out.hi = 2 * out.hi + letters.PROBE
+            else if out.lo > out.hi
+                out.hi = out.lo
+            end if
+        end if
+        if util.isArray(items) and items.Count() > 0 and items.Count() < letters.PROBE
+            lastOffset = mid + items.Count()
+            if not out.bounded or out.hi > lastOffset then out.hi = lastOffset
+            out.bounded = true
+            if target = letters.ALL then out.lo = lastOffset
+            if out.lo > out.hi then out.lo = out.hi
+        end if
+        return out
+    end function
+
+    ' How many items at the start of the first page read from the start
+    ' search's offset come before the subset (that search may start a
+    ' little early): those before the first item that is in the subset or
+    ' after it. None when the page has neither, and none for All.
+    function leadingSkip(items as dynamic, target as string, reverse as boolean) as integer
+        if target = letters.ALL or not util.isArray(items) then return 0
+        for j = 0 to items.Count() - 1
+            p = letters.place(items[j], target, reverse)
+            if p = "in" or p = "after" then return j
+        end for
+        return 0
+    end function
+end namespace

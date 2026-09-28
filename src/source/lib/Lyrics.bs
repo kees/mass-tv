@@ -1,0 +1,132 @@
+import "pkg:/source/lib/Util.bs"
+
+' Lyrics from Music Assistant (metadata/get_track_lyrics: synced LRC text,
+' or plain), for the Lyrics screen.
+namespace lyrics
+
+    ' Shown for a synced line with no words (an instrumental gap).
+    const GAP = "♪"
+
+    ' The lines to show and whether they're timed: { synced, lines: [{ t:
+    ' seconds or invalid, text }] }, from MA's metadata/get_track_lyrics
+    ' reply, [lyrics, lrc_lyrics] (either null): the synced lyrics first,
+    ' else the plain ones. No lines when it has neither.
+    function fromReply(reply as dynamic) as object
+        plain = ""
+        lrc = ""
+        if util.isArray(reply)
+            if reply.Count() > 0 then plain = util.str(reply[0], "")
+            if reply.Count() > 1 then lrc = util.str(reply[1], "")
+        end if
+        return lyrics.fromText(plain, lrc)
+    end function
+
+    ' Synced lines from the LRC text when it has any, else the plain text.
+    function fromText(plain as string, lrc as string) as object
+        timed = lyrics.parseLrc(lrc)
+        if timed.Count() > 0 then return { synced: true, lines: timed }
+        return { synced: false, lines: lyrics.parsePlain(plain) }
+    end function
+
+    ' LRC text: "[mm:ss.xx]words" lines, a line may carry several
+    ' timestamps; "[offset:+/-ms]" shifts them all; tags like "[ar:...]"
+    ' and untimed lines are left out. Sorted by time.
+    function parseLrc(text as string) as object
+        out = []
+        if text = "" then return out
+        offset = 0
+        text = text.Replace(Chr(13), "")
+        for each raw in text.Split(Chr(10))
+            line = raw.Trim()
+            times = []
+            while Left(line, 1) = "["
+                close = Instr(1, line, "]")
+                if close = 0 then exit while
+                tag = Mid(line, 2, close - 2)
+                line = Mid(line, close + 1)
+                t = lyrics.parseTime(tag)
+                if t <> invalid
+                    times.Push(t)
+                else if LCase(Left(tag, 7)) = "offset:"
+                    offset = Val(Mid(tag, 8)) / 1000.0
+                end if
+            end while
+            words = line.Trim()
+            if words = "" then words = lyrics.GAP
+            for each t in times
+                out.Push({ t: t, text: words })
+            end for
+        end for
+        for each l in out
+            l.t = l.t - offset
+            if l.t < 0 then l.t = 0
+        end for
+        out.SortBy("t")
+        return out
+    end function
+
+    ' "mm:ss", "mm:ss.xx", or "mm:ss:xx" -> seconds; invalid otherwise.
+    function parseTime(tag as string) as dynamic
+        colon = Instr(1, tag, ":")
+        if colon < 2 then return invalid
+        mins = tag.Left(colon - 1)
+        rest = tag.Mid(colon)
+        if not lyrics.isDigits(mins) then return invalid
+        secs = rest
+        frac = ""
+        sep = Instr(1, rest, ".")
+        if sep = 0 then sep = Instr(1, rest, ":")
+        if sep > 0
+            secs = rest.Left(sep - 1)
+            frac = rest.Mid(sep)
+        end if
+        if not lyrics.isDigits(secs) or (frac <> "" and not lyrics.isDigits(frac)) then return invalid
+        t = Val(mins) * 60 + Val(secs)
+        if frac <> "" then t = t + Val(frac) / (10 ^ Len(frac))
+        return t
+    end function
+
+    function isDigits(s as string) as boolean
+        if s = "" then return false
+        for i = 1 to Len(s)
+            c = Asc(Mid(s, i, 1))
+            if c < 48 or c > 57 then return false
+        end for
+        return true
+    end function
+
+    ' Plain lyrics: one entry per line, blank lines kept (they separate
+    ' verses), leading and trailing blank lines dropped.
+    function parsePlain(text as string) as object
+        out = []
+        if text.Trim() = "" then return out
+        for each raw in text.Replace(Chr(13), "").Split(Chr(10))
+            out.Push({ t: invalid, text: raw.Trim() })
+        end for
+        while out.Count() > 0 and out[0].text = ""
+            out.Shift()
+        end while
+        while out.Count() > 0 and out[out.Count() - 1].text = ""
+            out.Pop()
+        end while
+        return out
+    end function
+
+    ' The synced line being sung at `seconds` into the track: the last one
+    ' that has started; -1 before the first.
+    function lineAt(lines as object, seconds as float) as integer
+        lo = 0
+        hi = lines.Count() - 1
+        found = -1
+        while lo <= hi
+            mid = Int((lo + hi) / 2)
+            if lines[mid].t <= seconds
+                found = mid
+                lo = mid + 1
+            else
+                hi = mid - 1
+            end if
+        end while
+        return found
+    end function
+end namespace

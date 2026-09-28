@@ -1,13 +1,24 @@
 import "pkg:/source/lib/Util.bs"
 import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Bidi.bs"
 
 ' Text from Music Assistant (titles, artists, names) can hold characters
-' Roku's system font lacks: CJK, emoji, and many symbols show as boxes.
-' A Label draws with one font, without falling back to another, so such
-' a label switches to Mass TV's bundled font (tools/make_font.py: Latin,
-' Greek, Cyrillic, CJK, and monochrome emoji in one file, regular weight
-' only) for its whole text, at its system font's size, and back when its
-' text no longer needs it (list items are reused).
+' Roku's system font lacks, which it draws as boxes. A Label draws with
+' one font, without falling back to another, so:
+' - a character the system font lacks but has a lookalike for is shown as
+'   that lookalike (fold: U+2010 HYPHEN as "-", odd spaces as a space,
+'   invisible marks removed), keeping the label in the system font;
+' - a label with any other character the system font lacks (CJK, emoji,
+'   Vietnamese, Arabic, Hebrew, most symbols) switches to Mass TV's
+'   bundled font (tools/make_font.py: Latin, Greek, Cyrillic, CJK,
+'   Arabic, Hebrew, and monochrome emoji in one file, regular weight only;
+'   right-to-left text is shaped and ordered first, source/lib/Bidi.bs)
+'   for its whole text, at its system
+'   font's size, and back when its text no longer needs it (list items
+'   are reused).
+' What the system font draws (drawnRanges) was measured on a Roku (OS
+' 15.3; regular and bold alike) with tools/glyph_probe.py and the debug
+' build's glyph probe (components/debug/GlyphProbe).
 '
 ' Bold is emulated (widgets/BoldTwin: a copy of the label drawn a little
 ' to the right), to ship one weight. The caller says which labels are
@@ -18,16 +29,13 @@ import "pkg:/source/lib/Log.bs"
 namespace fonts
 
     const URI = "pkg:/fonts/MassTVText-Regular.ttf"
-    ' Characters from here up may be missing from the system font, which
-    ' does draw Latin (with its extensions), Greek, Cyrillic, and general
-    ' punctuation.
-    const FIRST_MISSING = &h2190
     const TWIN_COMPONENT = "BoldTwin"
 
-    ' Sets a label's text, in the bundled font if the text needs it. bold:
-    ' the label's own font is a bold one.
+    ' Sets a label's text (right-to-left text shaped and ordered for
+    ' display, then folded), in the bundled font if the text needs it.
+    ' bold: the label's own font is a bold one.
     sub label(lbl as object, text as dynamic, bold = false as boolean)
-        t = util.str(text, "")
+        t = fonts.fold(bidi.visual(util.str(text, "")))
         needs = fonts.needsBundled(t)
         if needs and not lbl.hasField("systemFont")
             ' Keep the label's own font to go back to.
@@ -44,12 +52,134 @@ namespace fonts
         if lbl.text <> t then lbl.text = t
     end sub
 
-    ' True when some character may be missing from the system font.
+    ' True when some character is missing from the system font (after
+    ' fold, which leaves only those without a lookalike).
     function needsBundled(text as string) as boolean
         for i = 1 to Len(text)
-            if Asc(Mid(text, i, 1)) >= fonts.FIRST_MISSING then return true
+            c = Asc(Mid(text, i, 1))
+            if c >= &hA0 and not fonts.systemDraws(c) then return true
         end for
         return false
+    end function
+
+    ' Whether the system font draws a character (or shows it blank, as a
+    ' space should be): ASCII, then the measured ranges.
+    function systemDraws(c as integer) as boolean
+        if c < &h7F then return true
+        r = fonts.drawnRanges()
+        lo = 0
+        hi = r.Count() / 2 - 1
+        while lo <= hi
+            mid = Int((lo + hi) / 2)
+            if c < r[2 * mid]
+                hi = mid - 1
+            else if c > r[2 * mid + 1]
+                lo = mid + 1
+            else
+                return true
+            end if
+        end while
+        return false
+    end function
+
+    ' The system font's characters beyond ASCII, as first and last code
+    ' point pairs in order (Latin-1, most of Latin Extended-A, basic Greek
+    ' and Cyrillic, common punctuation, and a few symbols; no Vietnamese,
+    ' Hebrew, Arabic, Indic, or other scripts).
+    function drawnRanges() as object
+        if m.fontsDrawn = invalid
+            m.fontsDrawn = [
+                &h00A0, &h0113, &h0116, &h012B, &h012E, &h014D, &h0150, &h017E
+                &h0192, &h0192, &h0218, &h021B, &h0237, &h0237, &h02C6, &h02C7
+                &h02C9, &h02C9, &h02D8, &h02DD, &h0300, &h0304, &h0306, &h0308
+                &h030A, &h030C, &h0312, &h0312, &h0326, &h0328, &h0337, &h0338
+                &h0374, &h0375, &h037A, &h037A, &h037E, &h037E, &h0384, &h038A
+                &h038C, &h038C, &h038E, &h03A1, &h03A3, &h03CF, &h03D7, &h03D7
+                &h0400, &h045F, &h0462, &h0463, &h0472, &h0475, &h0490, &h0491
+                &h066B, &h066B, &h1E80, &h1E85, &h1E9E, &h1E9E, &h1EF2, &h1EF3
+                &h2007, &h2007, &h2013, &h2015, &h2018, &h201A, &h201C, &h201E
+                &h2020, &h2022, &h2026, &h2026, &h2030, &h2030, &h2039, &h203A
+                &h2044, &h2044, &h2070, &h2070, &h2074, &h2079, &h2080, &h2089
+                &h20AC, &h20AC, &h20AF, &h20AF, &h20B4, &h20B4, &h20BA, &h20BA
+                &h20BD, &h20BD, &h2113, &h2113, &h2116, &h2117, &h2120, &h2120
+                &h2122, &h2122, &h2126, &h2126, &h212E, &h212E, &h2153, &h2154
+                &h215B, &h215E, &h2190, &h2193, &h2202, &h2202, &h2206, &h2206
+                &h220F, &h220F, &h2211, &h2212, &h2214, &h2215, &h2219, &h221A
+                &h221E, &h221E, &h222B, &h222B, &h2248, &h2248, &h2260, &h2260
+                &h2264, &h2265, &h25CA, &h25CA, &h25CF, &h25CF, &h2605, &h2606
+                &h266A, &h266B, &h2713, &h2713, &h2717, &h2717, &hFB01, &hFB02
+                &hFFFD, &hFFFD
+            ]
+        end if
+        return m.fontsDrawn
+    end function
+
+    ' The text as the system font can show it: characters it lacks that
+    ' have a lookalike it draws are replaced by it (fold map), invisible
+    ' marks removed. Display only: MA's text itself is left as it is.
+    function fold(text as string) as string
+        map = fonts.foldMap()
+        parts = invalid
+        n = Len(text)
+        for i = 1 to n
+            ch = Mid(text, i, 1)
+            c = Asc(ch)
+            if c >= &h02B9
+                rep = map[c.ToStr()]
+                if rep <> invalid
+                    if parts = invalid then parts = [Left(text, i - 1)]
+                    parts.Push(rep)
+                else if parts <> invalid
+                    parts.Push(ch)
+                end if
+            else if parts <> invalid
+                parts.Push(ch)
+            end if
+        end for
+        if parts = invalid then return text
+        return parts.Join("")
+    end function
+
+    ' Code point (decimal, as a string) -> what the system font shows for
+    ' it; "" removes it.
+    function foldMap() as object
+        if m.fontsFold = invalid
+            f = {}
+            ' Spaces of other widths, and line and paragraph separators.
+            for each c in [&h2000, &h2001, &h2002, &h2003, &h2004, &h2005, &h2006, &h2008, &h2009, &h200A, &h2028, &h2029, &h202F, &h205F]
+                f[c.ToStr()] = " "
+            end for
+            ' Invisible marks: zero-width space and joiners, direction
+            ' marks and embeddings, word joiner, the byte order mark,
+            ' variation selectors, and the grapheme joiner.
+            invisible = [&h034F, &h200B, &h200C, &h200D, &h200E, &h200F, &h202A, &h202B, &h202C, &h202D, &h202E, &hFEFF]
+            for c = &h2060 to &h2064
+                invisible.Push(c)
+            end for
+            for c = &h2066 to &h206F
+                invisible.Push(c)
+            end for
+            for c = &hFE00 to &hFE0F
+                invisible.Push(c)
+            end for
+            for each c in invisible
+                f[c.ToStr()] = ""
+            end for
+            ' Hyphens, dashes, dots, quotes, and primes.
+            pairs = [
+                [&h2010, "-"], [&h2011, "-"], [&h2043, "-"], [&h2012, Chr(&h2013)]
+                [&h2024, "."], [&h2025, ".."], [&h2027, Chr(&h00B7)]
+                [&h201B, Chr(&h2018)], [&h201F, Chr(&h201C)]
+                [&h2032, "'"], [&h2033, Chr(34)], [&h2035, "`"]
+                [&h02B9, "'"], [&h02BA, Chr(34)], [&h02BB, Chr(&h2018)], [&h02BC, Chr(&h2019)]
+                [&h02C8, "'"], [&h02CB, "`"]
+            ]
+            for each p in pairs
+                f[p[0].ToStr()] = p[1]
+            end for
+            m.fontsFold = f
+        end if
+        return m.fontsFold
     end function
 
     function isBoldFile(systemFont as dynamic) as boolean

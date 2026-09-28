@@ -36,10 +36,12 @@ sub onContent()
     if url = invalid then url = ""
     m.art.uri = url
     ' This card's column in its row (list items are reused as rows
-    ' scroll, so it's worked out again with each new content).
+    ' scroll, so it's worked out again with each new content). Only a
+    ' RowList's cards need it; a grid's content has no parent row, and
+    ' can hold thousands of items to look through.
     m.col = -1
     rowNode = c.getParent()
-    if rowNode <> invalid
+    if rowNode <> invalid and rowNode.getParent() <> invalid
         for i = 0 to rowNode.getChildCount() - 1
             if rowNode.getChild(i).isSameNode(c)
                 m.col = i

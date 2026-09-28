@@ -16,7 +16,7 @@
         <Group translation="[96,70]">
             <Label text="Music Assistant servers broadcast on your network" width="1728" color="#EEEEF6" font="font:MediumBoldSystemFont" />
             <!-- One MenuRow per server found: "name · address". Four rows
-                 show; more scroll within them (the edge rows fade). -->
+                 show; more scroll within them, with a scroll indicator. -->
             <MarkupList
                 id="servers"
                 translation="[0,70]"
@@ -26,7 +26,7 @@
                 numRows="4"
                 drawFocusFeedback="false"
                 vertFocusAnimationStyle="floatingFocus" />
-            <ListFade id="serversFade" />
+            <ListScroll id="serversScroll" clip="true" />
             <!-- While looking, or when nothing was found. -->
             <Label id="discovery" translation="[24,70]" width="1680" height="64" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
 

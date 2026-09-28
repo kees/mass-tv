@@ -1,22 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- "Who's listening?": one MenuRow per linked profile (a pill; the gray
-     row in the blue ring on focus), then "+ Link a profile". Up/Down wrap.
-     Emits profileChosen with the stored profile. -->
+     row in the blue ring on focus), and a separate "Link a new profile"
+     button. Up/Down move through the list to the button and wrap; Left
+     and Right go between the list and the button (back on the row that
+     had the focus). Emits profileChosen with the stored profile. -->
 <component name="ProfileScreen" extends="BaseScreen">
     <interface>
         <field id="profileChosen" type="assocarray" alwaysNotify="true" />
     </interface>
     <children>
-        <Label text="Who's listening?" translation="[0,200]" width="1920" horizAlign="center" color="#EEEEF6" font="font:LargeBoldSystemFont" />
+        <!-- The title centered a quarter of the way down the screen, the
+             button three quarters, and the list around the middle with as
+             many rows as fit between them (y values here are placeholders:
+             ProfileScreen.bs places them). -->
+        <Label id="title" text="Who's listening?" translation="[0,0]" width="1920" horizAlign="center" color="#EEEEF6" font="font:LargeBoldSystemFont" />
         <MarkupList
             id="list"
-            translation="[660,340]"
+            translation="[660,0]"
             itemComponentName="MenuRow"
             itemSize="[600,64]"
             itemSpacing="[0,8]"
-            numRows="7"
+            numRows="5"
             drawFocusFeedback="false"
             vertFocusAnimationStyle="floatingFocus" />
-        <Label id="hint" translation="[0,860]" width="1920" horizAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- More rows than fit scroll, with a scroll indicator at the
+             list's right. -->
+        <ListScroll id="listScroll" clip="true" />
+        <!-- passEdges: Left and Right go back to the list. -->
+        <ButtonRow id="linkButton" translation="[0,0]" minWidth="160" passEdges="true" />
     </children>
 </component>

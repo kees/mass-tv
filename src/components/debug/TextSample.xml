@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds: lines of text drawn large in one font over a black
+     screen, to see how Roku renders a script (e.g. whether it joins and
+     orders Arabic). Set by the masstv_sample launch param (MainScene). -->
+<component name="TextSample" extends="Group">
+    <interface>
+        <field id="lines" type="array" onChange="render" />
+        <field id="fontUri" type="string" value="pkg:/fonts/MassTVText-Regular.ttf" />
+        <field id="size" type="integer" value="72" />
+        <!-- True: each line goes through fonts.label on a system-font
+             label, as the app's screens show MA's text (shaping, order,
+             fold, and the switch to the bundled font). -->
+        <field id="viaLabel" type="boolean" value="false" />
+    </interface>
+    <children>
+        <Rectangle id="bg" color="#000000" width="1920" height="1080" />
+        <Group id="texts" />
+    </children>
+</component>

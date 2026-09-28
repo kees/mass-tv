@@ -21,6 +21,7 @@ sub init()
     m.body = m.top.findNode("body")
     m.hint = m.top.findNode("hint")
     m.closeButton = m.top.findNode("closeButton")
+    m.scrollbar = m.top.findNode("scrollbar")
     m.closeButton.buttons = ["Close"]
     m.closeButton.ObserveField("selected", "onClose")
     m.body.width = TEXT_W
@@ -35,8 +36,8 @@ sub layout()
     ' The screen reader says it all, then Close (which has the focus).
     m.closeButton.context = speech.join([m.top.title, m.top.text])
     textH = m.body.boundingRect().height
-    ' Everything but the text: padding, title and rule, the gap before
-    ' Close (room for the scroll hint), Close, padding.
+    ' Everything but the text: padding, title and rule, a gap before
+    ' Close (the scroll hint sits beside Close), Close, padding.
     chrome = PAD + TITLE_H + 24 + 32 + BUTTON_H + PAD
     viewH = textH
     maxViewH = 1080 - 2 * SCREEN_MARGIN - chrome
@@ -59,10 +60,20 @@ sub layout()
     m.window.translation = [x + PAD, textTop]
     m.window.clippingRect = [0, 0, TEXT_W, viewH]
     m.hint.visible = m.maxOffset > 0
-    m.hint.translation = [x + PAD, textTop + viewH + 4]
+    ' In the panel's right padding, beside the text.
+    m.scrollbar.translation = [x + PAD + TEXT_W + Int((PAD - 6) / 2), textTop]
+    m.scrollbar.height = viewH
+    m.scrollbar.window = viewH
+    m.scrollbar.total = textH
     ' Close centered under the text.
-    w = m.closeButton.boundingRect().width
-    m.closeButton.translation = [x + Int((panelW - w) / 2), top + panelH - PAD - BUTTON_H]
+    closeRect = m.closeButton.boundingRect()
+    closeX = x + Int((panelW - closeRect.width) / 2)
+    closeY = top + panelH - PAD - BUTTON_H
+    m.closeButton.translation = [closeX, closeY]
+    ' The scroll hint centered in the space left of Close, level with it.
+    hintSize = m.hint.boundingRect()
+    spaceW = closeX - (x + PAD)
+    m.hint.translation = [x + PAD + Int((spaceW - hintSize.width) / 2), closeY + Int((closeRect.height - hintSize.height) / 2)]
     scrollTo(0)
     log.debug("textpanel", "layout", { textH: textH, viewH: viewH, scrolls: m.maxOffset > 0 })
 end sub
@@ -72,6 +83,7 @@ sub scrollTo(offset as integer)
     if offset < 0 then offset = 0
     m.offset = offset
     m.body.translation = [0, -offset]
+    m.scrollbar.offset = offset
 end sub
 
 sub onActive()

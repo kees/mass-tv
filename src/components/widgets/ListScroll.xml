@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A scroll indicator (ScrollIndicator) for a MarkupList or MarkupGrid:
+     how many rows it has and which show, following its focus and content.
+     With follow (the default), it places itself to the list's right, in
+     the list's parent, moving when the list moves; ListFade sets follow
+     false and places it itself.
+
+     list    input: the MarkupList or MarkupGrid
+     total   input: the list's length in items, when it holds fewer
+             (Library's placeholders stop short of the end); 0: its
+             content's
+     follow  input: place it beside the list
+     clip    input: clip a MarkupList to its visible rows (set before
+             list), since it draws a row scrolling in outside its bounds;
+             ListFade clips its own list, and a grid that lets its next
+             row peek must not be clipped -->
+<component name="ListScroll" extends="Group">
+    <interface>
+        <field id="list" type="node" onChange="onList" />
+        <field id="total" type="integer" value="0" onChange="update" />
+        <field id="follow" type="boolean" value="true" onChange="place" />
+        <field id="clip" type="boolean" value="false" />
+    </interface>
+    <children>
+        <ScrollIndicator id="bar" />
+    </children>
+</component>

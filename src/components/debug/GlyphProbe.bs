@@ -1,0 +1,52 @@
+import "pkg:/source/lib/Log.bs"
+
+const COLUMNS = 32
+const ROWS = 16
+const CELL = 60
+
+sub init()
+    m.cells = m.top.findNode("cells")
+end sub
+
+sub render()
+    start = m.top.start
+    if start < 0 then return
+    m.cells.removeChildrenIndex(m.cells.getChildCount(), 0)
+    font = "font:MediumSystemFont"
+    if m.top.bold then font = "font:MediumBoldSystemFont"
+    ' Two boxes (U+25C0, and U+0378, unassigned; the font draws some
+    ' private-use characters), then a letter.
+    refs = [&h25C0, &h0378, Asc("A")]
+    for i = 0 to refs.Count() - 1
+        addCell(refs[i], i, 0, font)
+    end for
+    for i = 0 to COLUMNS * ROWS - 1
+        addCell(start + i, i mod COLUMNS, 1 + Int(i / COLUMNS), font)
+    end for
+    ' The page's start in binary at the top row's right end (bit 0 in the
+    ' last column), so the script can tell which page is on the screen.
+    for b = 0 to 15
+        if (start and (1 << b)) <> 0
+            mark = CreateObject("roSGNode", "Rectangle")
+            mark.color = "#FFFFFF"
+            mark.width = CELL - 20
+            mark.height = CELL - 20
+            mark.translation = [(COLUMNS - 1 - b) * CELL + 10, 10]
+            m.cells.appendChild(mark)
+        end if
+    end for
+    log.info("glyphs", "shown", { start: start, bold: m.top.bold, count: COLUMNS * ROWS })
+end sub
+
+sub addCell(codePoint as integer, col as integer, row as integer, font as string)
+    lbl = CreateObject("roSGNode", "Label")
+    lbl.font = font
+    lbl.color = "#FFFFFF"
+    lbl.width = CELL
+    lbl.height = CELL
+    lbl.horizAlign = "center"
+    lbl.vertAlign = "center"
+    lbl.translation = [col * CELL, row * CELL]
+    lbl.text = Chr(codePoint)
+    m.cells.appendChild(lbl)
+end sub

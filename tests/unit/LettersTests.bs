@@ -1,0 +1,144 @@
+sub lettersTests()
+    tst.begin("letters")
+    tst.eq(letters.labels().Count(), 28, "All, #, and 26 letters")
+    tst.eq(letters.labels()[0], "All", "All first")
+    tst.eq(letters.labels()[1], "#", "then #")
+    tst.eq(letters.labels()[27], "Z", "Z last")
+
+    tst.eq(letters.bucketOf({ sort_name: "beatles, the", name: "The Beatles" }), "B", "MA's sort name, article moved")
+    tst.eq(letters.bucketOf({ sort_name: "al. galizdra" }), "A", "letter first")
+    tst.eq(letters.bucketOf({ sort_name: "...and you will know us" }), "A", "leading punctuation skipped, like MA's key")
+    tst.eq(letters.bucketOf({ sort_name: "2 many djs" }), "#", "a digit first")
+    tst.eq(letters.bucketOf({ sort_name: "夜の楽団 · night band" }), "", "non-ASCII first: MA transliterates, the Roku can't")
+    tst.eq(letters.bucketOf({ sort_name: "élan" }), "", "an accented letter first is left to MA too")
+    tst.eq(letters.bucketOf({ name: "Zero" }), "Z", "the name without a sort name")
+    tst.eq(letters.bucketOf({ sort_name: "!!!" }), "", "nothing to go by")
+    tst.eq(letters.rankOf("#"), 0, "# ranks first")
+    tst.eq(letters.rankOf("A"), 1, "A")
+    tst.eq(letters.rankOf("Z"), 26, "Z")
+    tst.eq(letters.rankOf("All"), -1, "All has no rank")
+    tst.eq(letters.place({ sort_name: "abba" }, "M", false), "before", "A before M")
+    tst.eq(letters.place({ sort_name: "muse" }, "M", false), "in", "M in M")
+    tst.eq(letters.place({ sort_name: "zz top" }, "M", false), "after", "Z after M")
+    tst.eq(letters.place({ sort_name: "abba" }, "M", true), "after", "A after M, Z-A")
+    tst.eq(letters.place({ sort_name: "zz top" }, "M", true), "before", "Z before M, Z-A")
+    tst.eq(letters.place({ sort_name: "坂本龍一" }, "M", false), "unknown", "unplaceable")
+
+    ' A library in MA's order (by its transliterated key): 夜の楽団 sorts
+    ' as "y", 坂本龍一 as "b".
+    names = ["10cc", "2 many djs", "abba", "air", "坂本龍一", "beatles, the", "bjork", "cake", "daft punk", "muse", "muse ii", "夜の楽団", "yello", "zz top"]
+    lib = []
+    for each n in names
+        lib.Push({ sort_name: n })
+    end for
+    tst.eq(subset(lib, "#", false), ["10cc", "2 many djs"], "# subset")
+    tst.eq(subset(lib, "A", false), ["abba", "air"], "A subset: the unknown after it isn't sandwiched")
+    tst.eq(subset(lib, "B", false), ["beatles, the", "bjork"], "B subset: an unknown before the first B is left out")
+    tst.eq(subset(lib, "M", false), ["muse", "muse ii"], "M subset")
+    tst.eq(subset(lib, "Y", false), ["yello"], "Y subset")
+    tst.eq(subset(lib, "Z", false), ["zz top"], "Z subset at the list's end")
+    tst.eq(subset(lib, "Q", false), [], "an empty letter")
+    ' Unknowns between two items of the letter stay, in MA's order.
+    mixed = []
+    for each n in ["cake", "muse", "夜", "muse ii", "zz top"]
+        mixed.Push({ sort_name: n })
+    end for
+    tst.eq(subset(mixed, "M", false), ["muse", "夜", "muse ii"], "an unknown between two Ms")
+    ' Z-A: MA's list reversed.
+    rev = []
+    for i = lib.Count() - 1 to 0 step -1
+        rev.Push(lib[i])
+    end for
+    tst.eq(subset(rev, "M", true), ["muse ii", "muse"], "M subset, Z-A")
+    tst.eq(subset(rev, "#", true), ["2 many djs", "10cc"], "# subset, Z-A, at the end")
+    ' A long list with a run of unknowns: the search stays at or before the
+    ' letter's start, and few probes are needed.
+    big = []
+    for i = 0 to 1999
+        k = Int(i / 80)
+        if i mod 7 = 3
+            big.Push({ sort_name: "漢" + i.ToStr() })
+        else
+            big.Push({ sort_name: LCase(Chr(65 + k)) + "x" + i.ToStr() })
+        end if
+    end for
+    probes = { n: 0, ends: 0 }
+    got = subset(big, "M", false, probes)
+    tst.ok(got.Count() > 0, "M found in a long list")
+    tst.eq(letters.bucketOf({ sort_name: got[0] }), "M", "the M subset starts with an M")
+    tst.eq(letters.bucketOf({ sort_name: got[got.Count() - 1] }), "M", "and ends with one")
+    tst.ok(probes.n <= 12, "about log2(2000) probes, got " + probes.n.ToStr())
+    tst.ok(probes.ends <= 14, "and as many for its end, got " + probes.ends.ToStr())
+    ' A run of unknowns longer than a probe, between two Ms, stays.
+    unknowns = [{ sort_name: "cake" }, { sort_name: "muse" }]
+    for i = 1 to 9
+        unknowns.Push({ sort_name: "夜" + i.ToStr() })
+    end for
+    unknowns.Push({ sort_name: "muse ii" })
+    unknowns.Push({ sort_name: "zz top" })
+    tst.eq(subset(unknowns, "M", false).Count(), 11, "a long run of unknowns between two Ms")
+    tst.eq(letters.leadingSkip([{ sort_name: "air" }, { sort_name: "坂本" }, { sort_name: "beatles" }], "B", false), 2, "the first page skips to the letter's first item")
+    tst.eq(letters.leadingSkip([{ sort_name: "坂本" }, { sort_name: "cake" }], "B", false), 1, "or to the first item past an empty letter")
+    tst.eq(letters.leadingSkip([{ sort_name: "坂本" }], "B", false), 0, "nothing placeable: nothing skipped")
+    tst.eq(letters.leadingSkip([{ sort_name: "abba" }], letters.ALL, false), 0, "All skips nothing")
+
+    ' All's length, whatever MA's count guessed.
+    tst.eq(listEnd(lib, 0, lib.Count()), 14, "All's end from the count")
+    tst.eq(listEnd(lib, 0, 40), 14, "a count above the listing (MA counts cached items too)")
+    tst.eq(listEnd(lib, 0, 3), 14, "a count below it doubles until past the end")
+    tst.eq(listEnd(lib, 6, 0), 14, "from past the first page, with no count")
+    tst.eq(listEnd([], 0, 0), 0, "an empty list")
+    ' An exact count: one probe, of the last item.
+    ends = letters.newEndSearch(2, lib.Count())
+    mid = letters.endProbeAt(ends)
+    tst.eq(mid, 13, "the first probe reads the last counted item")
+    ends = letters.endStep(ends, mid, slice(lib, mid, letters.PROBE), letters.ALL, false)
+    tst.eq(letters.endProbeAt(ends), -1, "and finds the end with it")
+    tst.eq(ends.lo, 14, "at the count")
+end sub
+
+' Runs the searches and reads the first page against lib as MA would
+' serve it (offset and limit), returning the subset's sort names.
+function subset(lib as object, target as string, reverse as boolean, probes = invalid as dynamic) as object
+    state = letters.newSearch(lib.Count())
+    mid = letters.probeAt(state)
+    while mid >= 0
+        if probes <> invalid then probes.n = probes.n + 1
+        state = letters.searchStep(state, mid, slice(lib, mid, letters.PROBE), target, reverse)
+        mid = letters.probeAt(state)
+    end while
+    start = state.lo + letters.leadingSkip(slice(lib, state.lo, 3), target, reverse)
+    ends = letters.newEndSearch(start, lib.Count())
+    mid = letters.endProbeAt(ends)
+    while mid >= 0
+        if probes <> invalid then probes.ends = probes.ends + 1
+        ends = letters.endStep(ends, mid, slice(lib, mid, letters.PROBE), target, reverse)
+        mid = letters.endProbeAt(ends)
+    end while
+    out = []
+    for i = start to ends.lo - 1
+        out.Push(lib[i].sort_name)
+    end for
+    return out
+end function
+
+' All's end searched from offset from, starting from guess.
+function listEnd(lib as object, from as integer, guess as integer) as integer
+    ends = letters.newEndSearch(from, guess)
+    mid = letters.endProbeAt(ends)
+    n = 0
+    while mid >= 0 and n < 100
+        n = n + 1
+        ends = letters.endStep(ends, mid, slice(lib, mid, letters.PROBE), letters.ALL, false)
+        mid = letters.endProbeAt(ends)
+    end while
+    return ends.lo
+end function
+
+function slice(lib as object, offset as integer, limit as integer) as object
+    out = []
+    for i = offset to offset + limit - 1
+        if i < lib.Count() then out.Push(lib[i])
+    end for
+    return out
+end function

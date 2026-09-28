@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The playing track's lyrics, over its faded cover, the playing bar
+     below. Synced lyrics follow playback (the current line bright, kept in
+     the middle); Up/Down move a cursor through the lines (following again
+     after a few seconds without a key), OK plays from a synced line.
+     Plain lyrics scroll with Up/Down. Opened from Now Playing's Lyrics
+     button; Back returns. -->
+<component name="LyricsScreen" extends="BaseScreen">
+    <children>
+        <CoverArt id="bgArt" width="1920" height="1080" translation="[0,-96]" loadSize="80" opacity="0.12" placeholderUri="pkg:/images/placeholder_nowplaying.png" />
+        <!-- Centered above the lines, with whether they're timed beside
+             them and how to move through them ("synchronized (Up/Down to
+             scroll, OK to seek)", "no timing info (Up/Down to scroll)");
+             the playing bar below
+             already says what's playing. layoutHeader places the pair. -->
+        <Label id="kind" height="110" vertAlign="center" text="LYRICS" color="#5A8DEE" font="font:SmallBoldSystemFont" />
+        <Label id="kindNote" height="110" vertAlign="center" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- The lines, in a window between the header and the playing bar;
+             LyricsScreen.bs moves `scroller` to keep the line in view. -->
+        <Group id="clip" clippingRect="[0,110,1920,760]">
+            <Group id="scroller">
+                <Group id="lines" />
+            </Group>
+        </Group>
+        <!-- Right of the lines: how long the lyrics are and where the
+             view is. -->
+        <ScrollIndicator id="scrollbar" translation="[1848,110]" height="760" window="760" />
+        <Label id="message" translation="[96,420]" width="1728" horizAlign="center" color="#9A9FB0" font="font:MediumSystemFont" visible="false" />
+        <LoadingIndicator id="loadingIndicator" translation="[96,420]" />
+        <Animation id="scroll" duration="0.3" easeFunction="outQuad">
+            <Vector2DFieldInterpolator id="scrollTo" key="[0.0, 1.0]" fieldToInterp="scroller.translation" />
+        </Animation>
+        <Timer id="follow" duration="0.25" repeat="true" />
+        <Timer id="resume" duration="5" repeat="false" />
+    </children>
+</component>

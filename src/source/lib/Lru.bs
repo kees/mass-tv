@@ -1,0 +1,55 @@
+' A fixed-size cache that forgets its least recently used entry: for data
+' looked up again and again over a session that can run for days (the
+' playing bar's album years). Keys are compared ignoring case, as
+' BrightScript's associative arrays compare them.
+namespace lru
+
+    function new(capacity as integer) as object
+        return { capacity: capacity, values: {}, order: [] }
+    end function
+
+    function has(c as object, key as string) as boolean
+        return c.values.DoesExist(LCase(key))
+    end function
+
+    ' The value for key, now the most recently used; invalid if absent.
+    function get(c as object, key as string) as dynamic
+        k = LCase(key)
+        if not c.values.DoesExist(k) then return invalid
+        lru.touch(c, k)
+        return c.values[k]
+    end function
+
+    ' Sets key's value, the most recently used; drops the least recently
+    ' used entries past the capacity.
+    sub set(c as object, key as string, value as dynamic)
+        k = LCase(key)
+        if c.values.DoesExist(k)
+            lru.touch(c, k)
+        else
+            c.order.Push(k)
+        end if
+        c.values[k] = value
+        while c.order.Count() > c.capacity
+            c.values.Delete(c.order.Shift())
+        end while
+    end sub
+
+    function count(c as object) as integer
+        return c.order.Count()
+    end function
+
+    ' Moves a (lowercased) key to the most recent end.
+    sub touch(c as object, k as string)
+        n = c.order.Count()
+        for i = n - 1 to 0 step -1
+            if c.order[i] = k
+                if i < n - 1
+                    c.order.Delete(i)
+                    c.order.Push(k)
+                end if
+                return
+            end if
+        end for
+    end sub
+end namespace

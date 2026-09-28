@@ -7,6 +7,11 @@ import "pkg:/source/lib/Images.bs"
 ' Render-thread playback and library actions shared by screens.
 namespace actions
 
+    ' MA answers a play request only once it has gathered the tracks (an
+    ' artist's whole catalog from a service, by MA's default) and started
+    ' the player (for a Roku, over ECP): more than 10 s has been seen.
+    const PLAY_TIMEOUT_MS = 60000
+
     function playerQueueId() as string
         s = m.global.session
         pid = util.str(util.get(s, "playerId"), "")
@@ -44,7 +49,7 @@ namespace actions
             if not util.isAA(shown) then shown = item
             m.global.playPending = actions.pendingInfo(shown)
         end if
-        apic.call("player_queues/play_media", args, actions.onResult, { what: "play" })
+        apic.call("player_queues/play_media", args, actions.onResult, { what: "play" }, { timeoutMs: actions.PLAY_TIMEOUT_MS })
         if option = "next" then actions.toast("Playing next")
         if option = "add" then actions.toast("Added to queue")
     end sub
@@ -117,7 +122,16 @@ namespace actions
     sub onResult(resp as object, ctx as object)
         ' Refresh the queue soon after any command that changes it.
         m.global.pollKick = true
-        if resp.ok then return
+        if resp.ok
+            ' MA has taken the play request: the stream should follow soon
+            ' (the playing bar waits from here, not from the request).
+            p = m.global.playPending
+            if ctx.what = "play" and util.isAA(p) and p.sentAt <> invalid
+                p.answeredAt = util.nowMs()
+                m.global.playPending = p
+            end if
+            return
+        end if
         if ctx.what = "play" then m.global.playPending = {}
         log.warn("actions", ctx.what + " failed", { status: resp.status, kind: resp.kind, error: resp.error })
         command = util.str(resp.command, ctx.what)

@@ -7,4 +7,32 @@ sub fontsTests()
     tst.ok(fonts.needsBundled("night drive 🌘 mix"), "emoji: bundled font")
     tst.ok(fonts.needsBundled("▶ Play"), "symbols: bundled font")
     tst.ok(not fonts.needsBundled(""), "empty: system font")
+
+    ' What the system font draws, as measured (drawnRanges).
+    tst.ok(not fonts.needsBundled("← ↑ → ↓ ✓ ♪ ★ ™ € №"), "the arrows and symbols it has")
+    tst.ok(not fonts.needsBundled("Ελληνικά Кириллица Ґ"), "basic Greek and Cyrillic")
+    tst.ok(not fonts.needsBundled("Ș ț Łódź Ő"), "most of Latin Extended-A, and S and T with comma below")
+    tst.ok(fonts.needsBundled("Phở Hà Nội"), "Vietnamese: bundled font")
+    tst.ok(fonts.needsBundled("Hǎo"), "Latin Extended-B (pinyin tones): bundled font")
+    tst.ok(fonts.needsBundled("Ŏ"), "the breves it lacks: bundled font")
+    tst.ok(fonts.needsBundled("Ғ"), "Cyrillic beyond the basic letters: bundled font")
+    tst.ok(fonts.systemDraws(&h00A0), "no-break space")
+    tst.ok(fonts.systemDraws(&hFFFD), "the replacement character")
+    tst.ok(not fonts.systemDraws(&h2010), "U+2010 HYPHEN is missing")
+    tst.ok(not fonts.systemDraws(&hFFFF), "past the last range")
+
+    ' Lookalikes keep a label in the system font.
+    hyphen = Chr(&h2010)
+    name = "Bone Thugs" + hyphen + "n" + hyphen + "Harmony"
+    tst.eq(fonts.fold(name), "Bone Thugs-n-Harmony", "U+2010 HYPHEN as a hyphen-minus")
+    tst.ok(not fonts.needsBundled(fonts.fold(name)), "and so the system font")
+    tst.eq(fonts.fold("A" + Chr(&h2009) + "B" + Chr(&h202F) + "C"), "A B C", "thin and narrow spaces as spaces")
+    tst.eq(fonts.fold(Chr(&hFEFF) + "Intro" + Chr(&h200E) + Chr(&h200B)), "Intro", "invisible marks removed")
+    tst.eq(fonts.fold("12" + Chr(&h2033) + " Mix"), "12" + Chr(34) + " Mix", "double prime as a quote")
+    tst.eq(fonts.fold("Hawai" + Chr(&h02BB) + "i"), "Hawai" + Chr(&h2018) + "i", "okina as a turned comma")
+    tst.eq(fonts.fold("rock" + Chr(&h02BC) + "n"), "rock" + Chr(&h2019) + "n", "modifier apostrophe as an apostrophe")
+    tst.eq(fonts.fold("♥" + Chr(&hFE0F)), "♥", "a variation selector removed")
+    tst.eq(fonts.fold("Björk – Jóga"), "Björk – Jóga", "nothing to fold")
+    tst.eq(fonts.fold(""), "", "empty")
+    tst.eq(fonts.fold("坂本" + hyphen + "龍一"), "坂本-龍一", "folds in text that needs the bundled font too")
 end sub

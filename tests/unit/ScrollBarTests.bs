@@ -1,0 +1,13 @@
+sub scrollBarTests()
+    tst.begin("scrollbar")
+    tst.eq(scrollbar.thumb(10, 10, 0, 500, 24).show, false, "everything fits: hidden")
+    tst.eq(scrollbar.thumb(0, 10, 0, 500, 24).show, false, "nothing to show: hidden")
+    t = scrollbar.thumb(100, 25, 0, 500, 24)
+    tst.eq(t, { show: true, y: 0, h: 125 }, "a quarter shows: a quarter-long thumb at the top")
+    tst.eq(scrollbar.thumb(100, 25, 75, 500, 24).y, 375, "at the end: the thumb at the bottom")
+    tst.eq(scrollbar.thumb(100, 25, 37.5, 500, 24).y, 187.5, "halfway")
+    tst.eq(scrollbar.thumb(1000, 10, 0, 500, 24).h, 24, "a long text: at least the minimum height")
+    tst.eq(scrollbar.thumb(1000, 10, 990, 500, 24).y, 476, "and it still ends at the bottom")
+    tst.eq(scrollbar.thumb(100, 25, 200, 500, 24).y, 375, "past the end: at the bottom")
+    tst.eq(scrollbar.thumb(100, 25, -5, 500, 24).y, 0, "before the start: at the top")
+end sub

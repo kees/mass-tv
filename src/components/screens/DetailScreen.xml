@@ -22,6 +22,9 @@
             drawFocusFeedback="false"
             vertFocusAnimationStyle="floatingFocus" />
         <ListFade id="tracksFade" />
+        <!-- An artist's rows. The focused row stays the top one (fixed
+             focus: Down scrolls the rows up under it); the next row shows
+             below it, cut off by the screen's edge, as a hint of more. -->
         <RowList
             id="rows"
             translation="[96,400]"
@@ -37,8 +40,10 @@
             rowLabelFont="font:MediumBoldSystemFont"
             drawFocusFeedback="false"
             rowFocusAnimationStyle="floatingFocus"
-            vertFocusAnimationStyle="floatingFocus"
+            vertFocusAnimationStyle="fixedFocus"
             visible="false" />
         <LoadingIndicator id="loadingIndicator" translation="[96,420]" />
+        <!-- An artist page with no rows at all says so. -->
+        <Label id="empty" translation="[96,440]" width="1728" color="#9A9FB0" font="font:MediumSystemFont" wrap="true" visible="false" />
     </children>
 </component>

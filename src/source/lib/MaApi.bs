@@ -166,15 +166,35 @@ namespace ma
     end function
 
     ' "Artist A, Artist B" from an item's artists list.
+    ' An item's artists' names, joined. MA's "Various Artists" (its
+    ' compilation artist) is left out when anyone else is listed, who says
+    ' more; alone, it stays.
     function artistNames(item as dynamic) as string
         artists = util.get(item, "artists")
         if not util.isArray(artists) then return util.str(util.get(item, "artist_str"), "")
         names = []
+        various = []
         for each a in artists
             n = util.str(util.get(a, "name"), "")
-            if n <> "" then names.Push(n)
+            if n <> ""
+                if ma.isVariousArtists(a) then various.Push(n) else names.Push(n)
+            end if
         end for
+        if names.Count() = 0 then names = various
         return names.Join(", ")
+    end function
+
+    ' MA's compilation artist: named "Various Artists", or with its
+    ' MusicBrainz id (external_ids pairs).
+    function isVariousArtists(artist as dynamic) as boolean
+        if LCase(util.str(util.get(artist, "name"), "")) = "various artists" then return true
+        ids = util.get(artist, "external_ids")
+        if util.isArray(ids)
+            for each pair in ids
+                if util.isArray(pair) and pair.Count() = 2 and util.str(pair[1], "") = "89ad4ac3-39f7-470e-963a-56509c546377" then return true
+            end for
+        end if
+        return false
     end function
 
     function titleOf(item as dynamic) as string
@@ -184,22 +204,140 @@ namespace ma
         return name
     end function
 
+    ' The polled queue's item with this queue_item_id: its current item,
+    ' its next item, or one it listed recently (recent_items). The item
+    ' playing can be any of them: the poll lags a track change, and MA's
+    ' queue has reported no current item for a while after the Roku moved
+    ' to the enqueued track. invalid when the id is "" or not known.
+    function queueItemById(queue as dynamic, queueItemId as string) as dynamic
+        if queueItemId = "" then return invalid
+        candidates = [util.get(queue, "current_item"), util.get(queue, "next_item")]
+        recent = util.get(queue, "recent_items")
+        if util.isArray(recent) then candidates.Append(recent)
+        for each qi in candidates
+            if util.isAA(qi) and util.str(util.get(qi, "queue_item_id"), "") = queueItemId then return qi
+        end for
+        return invalid
+    end function
+
     ' Title and second line for what's playing, formatted like track rows
-    ' (titleOf, subtitleOf) from the polled queue's current item when it is
-    ' the item playing. Otherwise MA's stream metadata, which has the name
-    ' without its version and MA's own artist string.
+    ' (titleOf, subtitleOf) and ending with the track's year when MA has
+    ' one ("Artist · Album · 2010"), from the polled queue's item when it
+    ' lists the item playing (queueItemById). Otherwise MA's stream
+    ' metadata, which has the name without its version and MA's own
+    ' artist string.
     function nowPlayingText(np as dynamic, queue as dynamic) as object
         out = { title: util.str(util.get(np, "title"), ""), line2: util.str(util.get(np, "artist"), "") }
-        cur = util.get(queue, "current_item")
+        cur = ma.queueItemById(queue, util.str(util.get(np, "queueItemId"), ""))
         if not util.isAA(cur) then return out
-        if util.str(util.get(cur, "queue_item_id"), "") <> util.str(util.get(np, "queueItemId"), "") then return out
         mi = util.get(cur, "media_item")
         if not util.isAA(mi) then return out
         title = ma.titleOf(mi)
         if title <> "" then out.title = title
         line2 = ma.subtitleOf(mi)
         if line2 <> "" then out.line2 = line2
+        year = ma.yearOf(mi)
+        if year <> "" and out.line2 <> "" then out.line2 = out.line2 + " · " + year
+        if year <> "" and out.line2 = "" then out.line2 = year
         return out
+    end function
+
+    ' An item's year as text, "" when MA has none: its own year (a whole
+    ' number, or text as the slim queue item keeps it), else the year of
+    ' its release date ("2010-01-01T00:00:00+00:00"), else its album's.
+    function yearOf(item as dynamic) as string
+        y = util.get(item, "year")
+        if util.isNumber(y) and y > 0 then return Int(y).ToStr()
+        if util.isString(y) and ma.isYear(y) then return y
+        date = util.str(util.getPath(item, "metadata.release_date"), "")
+        if ma.isYear(Left(date, 4)) then return Left(date, 4)
+        ay = util.getPath(item, "album.year")
+        if util.isNumber(ay) and ay > 0 then return Int(ay).ToStr()
+        return ""
+    end function
+
+    ' Four digits, not 0000.
+    function isYear(s as string) as boolean
+        if Len(s) <> 4 or s = "0000" then return false
+        for i = 1 to 4
+            c = Asc(Mid(s, i, 1))
+            if c < 48 or c > 57 then return false
+        end for
+        return true
+    end function
+
+    ' The albums an artist appears on without being their album artist
+    ' (compilations): the albums of the artist's library tracks, each once,
+    ' in the tracks' order, leaving out the artist's own albums (ownAlbums,
+    ' from artist_albums). MA lists only the latter as an artist's albums,
+    ' so an artist found only on compilations has none; MA's web UI shows
+    ' these as "Appears on".
+    function appearsOnAlbums(tracks as dynamic, ownAlbums as dynamic) as object
+        out = []
+        skip = {}
+        if util.isArray(ownAlbums)
+            for each a in ownAlbums
+                u = ma.uriOf(a)
+                if u <> "" then skip[u] = true
+            end for
+        end if
+        if not util.isArray(tracks) then return out
+        for each t in tracks
+            album = util.get(t, "album")
+            u = ma.uriOf(album)
+            if u <> "" and not skip.DoesExist(u)
+                skip[u] = true
+                a = util.copyAA(album)
+                if a.media_type = invalid then a.media_type = "album"
+                out.Push(a)
+            end if
+        end for
+        return out
+    end function
+
+    ' Provider instance id -> name, from MA's providers list.
+    function sourceNames(providers as dynamic) as object
+        out = {}
+        if not util.isArray(providers) then return out
+        for each p in providers
+            id = util.str(util.get(p, "instance_id"), "")
+            name = util.str(util.get(p, "name"), "")
+            if id <> "" and name <> "" then out[id] = name
+        end for
+        return out
+    end function
+
+    ' Where an item comes from, for its Detail page: each available
+    ' provider mapping's source, named as MA names it for this profile
+    ' (names: sourceNames), once each ("<service>", "<service>, Filesystem
+    ' (local disk) [music]"). A source not in names shows as MA gives it
+    ' (its domain). "" when the item has none.
+    function sourceText(item as dynamic, names as dynamic) as string
+        parts = []
+        seen = {}
+        maps = util.get(item, "provider_mappings")
+        if util.isArray(maps)
+            for each pm in maps
+                if util.get(pm, "available", true) <> false
+                    inst = util.str(util.get(pm, "provider_instance"), "")
+                    name = util.str(util.get(names, inst), "")
+                    if name = "" then name = util.str(util.get(pm, "provider_domain"), inst)
+                    if name <> "" and not seen.DoesExist(name)
+                        seen[name] = true
+                        parts.Push(name)
+                    end if
+                end if
+            end for
+        end if
+        if parts.Count() = 0
+            prov = util.str(util.get(item, "provider"), "")
+            if prov <> "" and prov <> "library"
+                name = util.str(util.get(names, prov), "")
+                if name = "" then name = prov
+                parts.Push(name)
+            end if
+        end if
+        return parts.Join(", ")
     end function
 
     ' Second line for cards and rows.

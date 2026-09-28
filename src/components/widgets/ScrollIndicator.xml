@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A thin vertical scroll indicator for the right edge of a scrolling
+     area: how much of the content shows (the thumb's length) and where
+     (its position). Only shows; the owner scrolls with its own keys and
+     sets the fields, in any one unit (pixels, rows). Hidden while
+     everything fits.
+
+     height   the track's length
+     total    the content's length
+     window   how much of it fits (in view at once)
+     offset   how far it has scrolled -->
+<component name="ScrollIndicator" extends="Group">
+    <interface>
+        <field id="height" type="float" value="0" onChange="update" />
+        <field id="total" type="float" value="0" onChange="update" />
+        <field id="window" type="float" value="0" onChange="update" />
+        <field id="offset" type="float" value="0" onChange="update" />
+    </interface>
+    <children>
+        <Rectangle id="track" width="6" color="#2A313B" />
+        <Rectangle id="thumb" width="6" color="#9A9FB0" />
+    </children>
+</component>

@@ -93,7 +93,8 @@ sources, or tool versions change. `make assets` does just this step.
 Mass TV is licensed under the Apache License 2.0 (`LICENSE`).
 
 The bundled font (`src/fonts/`) is built from Noto Sans, Noto Sans CJK,
-and Noto Emoji, and like them is under the SIL Open Font License 1.1
+Noto Emoji, Noto Sans Arabic, and Noto Sans Hebrew, and like them is
+under the SIL Open Font License 1.1
 (`fonts/OFL-*.txt`). The logo's lettering is drawn in Roboto, also under
 the SIL Open Font License (`fonts/OFL-Roboto.txt`).
 

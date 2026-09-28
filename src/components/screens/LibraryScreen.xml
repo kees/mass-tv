@@ -10,6 +10,9 @@
              its left (no fixed widths, so their text can be measured). -->
         <Label id="viewLabel" translation="[1224,28]" color="#9A9FB0" font="font:SmallSystemFont" />
         <Label id="filter" translation="[1224,28]" color="#9A9FB0" font="font:SmallSystemFont" />
+        <!-- Artists and Albums: the letter subsets, under the tab row; the
+             grid and list move down to make room (layoutContent). -->
+        <LetterRow id="letterRow" translation="[96,100]" visible="false" />
         <!-- Two rows take the focus; the grid's clipping rectangle reaches
              past the screen's bottom, so the next row (which the grid
              builds anyway, for scrolling) shows there cut off by the
@@ -25,6 +28,8 @@
             itemClippingRect="[0,0,1728,1100]"
             drawFocusFeedback="false"
             vertFocusAnimationStyle="floatingFocus" />
+        <!-- Right of the grid: how many rows it has and which show. -->
+        <ListScroll id="gridScroll" />
         <MarkupList
             id="list"
             translation="[96,110]"

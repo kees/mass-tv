@@ -1,9 +1,21 @@
 import "pkg:/source/lib/FocusRing.bs"
 import "pkg:/source/lib/Store.bs"
 import "pkg:/source/lib/LibrarySort.bs"
+import "pkg:/source/lib/Letters.bs"
+import "pkg:/source/lib/Paging.bs"
 
 const PAGE_SIZE = 60
-const PREFETCH_MARGIN = 12
+' Placeholders kept past the focus once a listing's length is known
+' (source/lib/Paging.bs): how far one held Down can scroll, about 20 s in
+' a grid and a minute in a list.
+const RUNWAY = 360
+' Pages are read under the focus and this many items before and after it
+' (ahead: about 3 s of a held Down in a grid).
+const READ_BEHIND = 12
+const READ_AHEAD = 60
+' How far the grid and list move down under the letter row.
+const LETTER_SHIFT = 64
+const CONTENT_Y = 110
 const TAB_SPACING = 56
 ' The sort label's right edge: its focus ring then ends at the screen's
 ' right margin (1824).
@@ -22,12 +34,32 @@ sub init()
     m.listFade.list = m.list
     m.empty = m.top.findNode("empty")
     m.loadingIndicator = m.top.findNode("loadingIndicator")
+    ' Tabs with letters have the letter row (letter subsets).
     m.tabs = [
-        { id: "playlists", label: "Playlists", command: "music/playlists/library_items" }
-        { id: "albums", label: "Albums", command: "music/albums/library_items" }
-        { id: "artists", label: "Artists", command: "music/artists/library_items" }
-        { id: "tracks", label: "Tracks", command: "music/tracks/library_items" }
+        { id: "playlists", label: "Playlists", command: "music/playlists/library_items", count: "music/playlists/count" }
+        { id: "albums", label: "Albums", command: "music/albums/library_items", count: "music/albums/count", letters: true }
+        { id: "artists", label: "Artists", command: "music/artists/library_items", count: "music/artists/count", letters: true }
+        { id: "tracks", label: "Tracks", command: "music/tracks/library_items", count: "music/tracks/count" }
     ]
+    m.letterRow = m.top.findNode("letterRow")
+    m.letterRow.ObserveField("selected", "onLetterPicked")
+    ' The letter subset shown per tab ("All" when none is stored).
+    m.letterFor = {}
+    ' Whether the letter row has focus (the level between the tab row and
+    ' the grid or list).
+    m.inLetters = false
+    ' The listing being read: its letter (or All) and direction, MA's
+    ' count (invalid until it answers, -1 if it failed), the letter's start
+    ' search, the end search, and the pages (paging state; invalid until
+    ' the start is known).
+    m.target = letters.ALL
+    m.reverse = false
+    m.count = invalid
+    m.search = invalid
+    m.endSearch = invalid
+    m.paging = invalid
+    ' Counts loadTab calls, so replies for an earlier listing are dropped.
+    m.gen = 0
     m.tabRing = m.top.findNode("tabRing")
     ' The tab row speaks for itself (speakTabRow).
     m.tabsGroup.muteAudioGuide = true
@@ -61,12 +93,18 @@ sub init()
     ' Grid or list per tab, remembered in the settings.
     m.views = util.get(store.settings(), "libraryViews")
     if not util.isAA(m.views) then m.views = {}
+    m.gridScroll = m.top.findNode("gridScroll")
+    m.gridScroll.list = m.grid
     for each view in [m.grid, m.list]
         view.ObserveField("itemSelected", "onSelected")
         view.ObserveField("itemFocused", "onFocused")
+        ' itemFocused changes only when a scroll stops; currFocusRow moves
+        ' with it, so pages load under a held Down.
+        view.ObserveField("currFocusRow", "onFocusRow")
     end for
     speakLists([m.grid, m.list])
     m.listOpenEnded = {}
+    m.listTotal = {}
     m.top.ObserveField("params", "onParams")
     ' The ring shows only while the tab row has focus (Up to the nav bar
     ' leaves the shown tab just blue).
@@ -107,9 +145,19 @@ function viewFor(tabId as string) as string
     return "grid"
 end function
 
+' The shown tab's sort. A letter subset is a run of MA's name order, so a
+' letter lists by name (in the stored direction if the stored sort is by
+' name); the stored sort, kept for All, is untouched.
 function currentSort() as object
     tabId = m.tabs[m.tabIndex].id
-    return librarysort.valid(tabId, util.get(m.sorts, tabId))
+    s = librarysort.valid(tabId, util.get(m.sorts, tabId))
+    if sortShown() then return s
+    return { field: "name", reverse: s.field = "name" and s.reverse }
+end function
+
+' Whether the tab row offers Sort: not while a letter is shown.
+function sortShown() as boolean
+    return currentLetter() = letters.ALL
 end function
 
 sub setSort(field as string, reverse as boolean)
@@ -122,6 +170,28 @@ end sub
 function isListView() as boolean
     return viewFor(m.tabs[m.tabIndex].id) = "list"
 end function
+
+function hasLetters() as boolean
+    return m.tabs[m.tabIndex].letters = true
+end function
+
+function currentLetter() as string
+    if not hasLetters() then return letters.ALL
+    return util.str(util.get(m.letterFor, m.tabs[m.tabIndex].id), letters.ALL)
+end function
+
+' The letter row shows on tabs that have it, with the grid, list, and
+' their messages moved down under it.
+sub layoutContent()
+    shift = 0
+    if hasLetters() then shift = LETTER_SHIFT
+    m.letterRow.visible = hasLetters()
+    m.letterRow.chosen = currentLetter()
+    m.grid.translation = [96, CONTENT_Y + shift]
+    m.list.translation = [96, CONTENT_Y + shift]
+    m.empty.translation = [96, 220 + shift]
+    m.loadingIndicator.translation = [96, 130 + shift]
+end sub
 
 function currentView() as object
     if isListView() then return m.list
@@ -139,33 +209,51 @@ end sub
 
 sub loadTab()
     apic.cancelAll()
+    m.gen = m.gen + 1
     tabDef = m.tabs[m.tabIndex]
     m.content = CreateObject("roSGNode", "ContentNode")
-    m.offset = 0
-    m.exhausted = false
-    m.loading = false
+    m.target = currentLetter()
+    m.reverse = currentSort().reverse
+    m.count = invalid
+    m.search = invalid
+    m.endSearch = invalid
+    m.endFailed = false
+    m.paging = invalid
+    m.probes = 0
+    ' The letter row belongs to Artists and Albums only.
+    if not hasLetters() then m.inLetters = false
+    layoutContent()
     m.grid.visible = not isListView()
+    m.gridScroll.visible = m.grid.visible
     m.list.visible = isListView()
     m.listFade.visible = m.list.visible
+    ' Until the length is known, the screen reader can't say "of N".
+    setShownTotal(-1)
     view = currentView()
     view.content = m.content
     m.empty.visible = false
     renderTabs()
     if m.inTabs
         m.focusTarget = m.tabsGroup
+    else if m.inLetters
+        m.focusTarget = m.letterRow
+        m.letterRow.setFocus(true)
     else
         m.focusTarget = view
         view.setFocus(true)
     end if
-    loadMore()
+    startListing()
 end sub
 
 ' The tab row: the shown tab (m.tabIndex) is blue. While the row has
 ' focus, the cursor is white inside the focus ring; Left and Right move it
 ' along the tabs, then the view label, then the sort label. OK on a tab
 ' shows it (like the nav bar), on View flips the shown tab between grid
-' and list, and on Sort (or * anywhere on the row) opens the options.
+' and list, and on Sort opens the options. While a letter is shown there
+' is no Sort (letters list by name); "Favorites only" then shows there
+' when on, as a plain label.
 sub renderTabs()
+    if m.slot = "sort" and not sortShown() then m.slot = "view"
     rowFocused = m.tabsGroup.hasFocus()
     slot = ""
     if rowFocused then slot = m.slot
@@ -190,9 +278,15 @@ sub renderTabs()
         end if
     end for
     s = currentSort()
-    text = "Sort: " + librarysort.describe(s.field, s.reverse)
-    if m.favoritesOnly then text = "Favorites only · " + text
+    text = ""
+    if sortShown()
+        text = "Sort: " + librarysort.describe(s.field, s.reverse)
+        if m.favoritesOnly then text = "Favorites only · " + text
+    else if m.favoritesOnly
+        text = "Favorites only"
+    end if
     m.filterLabel.text = text
+    m.filterLabel.visible = text <> ""
     if slot = "sort" then m.filterLabel.color = focusring.TEXT else m.filterLabel.color = focusring.PLAIN_TEXT
     fsize = focusring.textSize(m.filterLabel)
     fy = m.filterLabel.translation[1]
@@ -201,7 +295,8 @@ sub renderTabs()
     if isListView() then m.viewLabel.text = "View: List" else m.viewLabel.text = "View: Grid"
     if slot = "view" then m.viewLabel.color = focusring.TEXT else m.viewLabel.color = focusring.PLAIN_TEXT
     vsize = focusring.textSize(m.viewLabel)
-    vx = fx - LABEL_GAP - vsize.w
+    vx = FILTER_RIGHT - vsize.w
+    if text <> "" then vx = fx - LABEL_GAP - vsize.w
     m.viewLabel.translation = [vx, fy]
     ' The ring marks the row's cursor while the row has focus.
     if slot = "sort"
@@ -238,25 +333,231 @@ sub speakTabRow(slot as string)
     m.tabRowSpoken = text
 end sub
 
-sub loadMore()
-    if m.loading or m.exhausted then return
-    m.loading = true
+' PAGE_SIZE, or a debug build's masstv_page_size.
+function pageSize() as integer
+    if m.global.hasField("libraryPageSize") and m.global.libraryPageSize > 0 then return m.global.libraryPageSize
+    return PAGE_SIZE
+end function
+
+' --- reading a listing ---
+' The listing is a range of MA's offsets: from 0 (All) or a letter's
+' start (found by a binary search in MA's name order), to its end, found
+' by another binary search once the first page shows (MA's count bounds
+' both, but it can count more than the listing holds). With the length
+' known, placeholders stand in for the items not read yet (RUNWAY past
+' the focus), and pages are read under the focus wherever it goes, so a
+' held Down never stops at the end of what has loaded (Paging.bs).
+' Without it (the end search failed), pages are read one after another
+' as the focus nears the end.
+
+sub startListing()
     tabDef = m.tabs[m.tabIndex]
+    m.loadingIndicator.active = true
+    if m.target = letters.ALL
+        ' The first page doesn't wait for the count.
+        m.paging = paging.newState(0, pageSize())
+        loadPages(0)
+    end if
+    args = {}
+    if m.favoritesOnly then args.favorite_only = true
+    apic.call(tabDef.count, args, onCount, { tab: tabDef.id, gen: m.gen })
+end sub
+
+sub onCount(resp as object, ctx as object)
+    if ctx.gen <> m.gen then return
+    if resp.ok and util.isNumber(resp.data)
+        m.count = resp.data
+    else
+        log.warn("library", "count failed", { tab: ctx.tab, status: resp.status, error: resp.error })
+        m.count = -1
+    end if
+    if m.target = letters.ALL
+        findEnd()
+    else if m.count < 0
+        ' A letter's start can't be searched for without the count.
+        m.loadingIndicator.active = false
+        showEmpty("Couldn't load your library.")
+    else
+        m.search = letters.newSearch(m.count)
+        letterProbe()
+    end if
+end sub
+
+' The focused item's index, or 0 before the view has one.
+function focusIndex() as integer
+    idx = currentView().itemFocused
+    if not util.isInteger(idx) or idx < 0 then return 0
+    return idx
+end function
+
+' Reads the next page wanted for a focus at index focus, one request at a
+' time; each reply asks again.
+sub loadPages(focus as integer)
+    if m.paging = invalid or m.paging.loadingPage >= 0 then return
+    extent = m.content.getChildCount()
+    ' While the end search runs, nothing past the content is read; pages
+    ' are read one after another only if it failed.
+    if m.paging.total < 0 and paging.isLoaded(m.paging, 0) and not m.endFailed then extent = extent - 1
+    p = paging.nextPage(m.paging, focus, READ_BEHIND, READ_AHEAD, extent)
+    if p < 0 then return
+    m.paging.loadingPage = p
+    tabDef = m.tabs[m.tabIndex]
+    order = currentOrder()
+    offset = m.paging.base + p * m.paging.pageSize
+    apic.call(tabDef.command, listArgs(m.paging.pageSize, offset), onPage, { tab: tabDef.id, order: order, gen: m.gen, page: p })
+end sub
+
+function currentOrder() as string
     s = currentSort()
-    order = librarysort.orderBy(s.field, s.reverse)
-    args = { limit: PAGE_SIZE, offset: m.offset, order_by: order }
+    return librarysort.orderBy(s.field, s.reverse)
+end function
+
+' The shown tab's listing arguments: its sort and the favorites switch.
+function listArgs(limit as integer, offset as integer) as object
+    args = { limit: limit, offset: offset, order_by: currentOrder() }
     if m.favoritesOnly then args.favorite = true
-    ' Later pages load behind items already shown; only an empty tab needs
-    ' the loading marker.
-    m.loadingIndicator.active = m.offset = 0
-    apic.call(tabDef.command, args, onPage, { tab: tabDef.id, order: order })
+    return args
+end function
+
+' A letter's start: each probe reads a few items at the middle of what's
+' left (Letters.bs).
+sub letterProbe()
+    mid = letters.probeAt(m.search)
+    if mid < 0
+        log.debug("library", "letter start", { letter: m.target, offset: m.search.lo, probes: m.probes })
+        m.paging = paging.newState(m.search.lo, pageSize())
+        loadPages(0)
+        return
+    end if
+    tabDef = m.tabs[m.tabIndex]
+    m.probes = m.probes + 1
+    apic.call(tabDef.command, listArgs(letters.PROBE, mid), onLetterProbe, { tab: tabDef.id, gen: m.gen, mid: mid })
+end sub
+
+sub onLetterProbe(resp as object, ctx as object)
+    if ctx.gen <> m.gen then return
+    items = invalid
+    if resp.ok then items = resp.data
+    m.search = letters.searchStep(m.search, ctx.mid, items, m.target, m.reverse)
+    letterProbe()
+end sub
+
+' The end search starts once the first page has shown and the count is
+' in (and isn't needed when the first page already reached the end).
+sub findEnd()
+    if m.paging = invalid or m.paging.total >= 0 or m.endSearch <> invalid then return
+    if m.count = invalid or not paging.isLoaded(m.paging, 0) then return
+    from = m.paging.start
+    ' All's first page is known to be all inside.
+    if m.target = letters.ALL then from = m.paging.start + m.content.getChildCount()
+    guess = m.count
+    if guess < 0 then guess = from + m.paging.pageSize
+    m.endSearch = letters.newEndSearch(from, guess)
+    m.endProbes = 0
+    m.endStarted = CreateObject("roTimespan")
+    endProbe()
+end sub
+
+sub endProbe()
+    mid = letters.endProbeAt(m.endSearch)
+    if mid < 0
+        total = m.endSearch.lo - m.paging.start
+        if total < 0 then total = 0
+        log.debug("library", "range", { letter: m.target, start: m.paging.start, total: total, count: m.count, probes: m.endProbes, ms: m.endStarted.TotalMilliseconds() })
+        setTotal(total)
+        focus = focusIndex()
+        topUp(focus)
+        loadPages(focus)
+        return
+    end if
+    tabDef = m.tabs[m.tabIndex]
+    m.endProbes = m.endProbes + 1
+    apic.call(tabDef.command, listArgs(letters.PROBE, mid), onEndProbe, { tab: tabDef.id, gen: m.gen, mid: mid })
+end sub
+
+sub onEndProbe(resp as object, ctx as object)
+    if ctx.gen <> m.gen then return
+    if not resp.ok or not util.isArray(resp.data)
+        ' Pages are then read one after another, to the list's end.
+        log.warn("library", "end search failed", { tab: ctx.tab, status: resp.status, error: resp.error })
+        m.endFailed = true
+        loadPages(focusIndex())
+        return
+    end if
+    m.endSearch = letters.endStep(m.endSearch, ctx.mid, resp.data, m.target, m.reverse)
+    endProbe()
+end sub
+
+' The listing's length is known (or shorter than thought): drops content
+' past it, and gives the screen reader and scroll bars the length.
+sub setTotal(total as integer)
+    if m.paging.total >= 0 and m.paging.total <= total then return
+    m.paging.total = total
+    extent = m.content.getChildCount()
+    if extent > total then m.content.removeChildrenIndex(extent - total, total)
+    setShownTotal(total)
+    if total = 0 then showEmptyListing()
+end sub
+
+' The length for "of N" and the scroll bars; -1 while unknown.
+sub setShownTotal(total as integer)
+    m.listOpenEnded[m.grid.id] = total < 0
+    m.listOpenEnded[m.list.id] = total < 0
+    shown = total
+    if shown < 0 then shown = 0
+    m.listTotal[m.grid.id] = shown
+    m.listTotal[m.list.id] = shown
+    m.gridScroll.total = shown
+    m.listFade.total = shown
+end sub
+
+' Placeholders up to RUNWAY past the focus, once the length is known.
+sub topUp(focus as integer)
+    if m.paging = invalid then return
+    extent = m.content.getChildCount()
+    want = paging.extentFor(m.paging, focus, RUNWAY, extent)
+    if want <= extent then return
+    started = CreateObject("roTimespan")
+    m.content.createChildren(want - extent, "ContentNode")
+    log.debug("library", "placeholders", { added: want - extent, extent: want, ms: started.TotalMilliseconds() })
+end sub
+
+' OK on the letter row: show that subset (or All), keeping the focus on
+' the row. A subset lists by name, with Sort hidden (currentSort); All
+' comes back in its own sort.
+sub onLetterPicked()
+    label = m.letterRow.selected
+    tabId = m.tabs[m.tabIndex].id
+    m.letterFor[tabId] = label
+    log.info("library", "letter", { tab: tabId, letter: label })
+    loadTab()
+end sub
+
+' "No albums under M.", "No favorite artists starting with a digit or
+' symbol."
+function letterEmptyText() as string
+    kind = LCase(m.tabs[m.tabIndex].label)
+    if m.favoritesOnly then kind = "favorite " + kind
+    if m.target = letters.OTHER then return "No " + kind + " starting with a digit or symbol."
+    return "No " + kind + " under " + m.target + "."
+end function
+
+sub showEmptyListing()
+    if m.target <> letters.ALL
+        showEmpty(letterEmptyText())
+    else if m.favoritesOnly
+        showEmpty("No favorites here yet.")
+    else
+        showEmpty("Nothing in your library here yet.")
+    end if
 end sub
 
 sub onPage(resp as object, ctx as object)
-    m.loading = false
+    if ctx.gen <> m.gen then return
+    m.paging.loadingPage = -1
     if ctx.tab <> m.tabs[m.tabIndex].id then return
     m.loadingIndicator.active = false
-    if not resp.ok and ctx.order <> "sort_name"
+    if not resp.ok and ctx.order <> "sort_name" and m.content.getChildCount() = 0
         ' The sort keys are mirrored from MA's web UI; if this server
         ' doesn't take one, fall back to names.
         log.warn("library", "sort refused", { tab: ctx.tab, order: ctx.order, status: resp.status, error: resp.error })
@@ -266,41 +567,75 @@ sub onPage(resp as object, ctx as object)
         return
     end if
     if not resp.ok or not util.isArray(resp.data)
-        showEmpty("Couldn't load your library.")
+        ' A later page is asked for again when the focus next moves.
+        log.warn("library", "page failed", { tab: ctx.tab, page: ctx.page, status: resp.status, error: resp.error })
+        if m.content.getChildCount() = 0 then showEmpty("Couldn't load your library.")
         return
     end if
     items = resp.data
+    paging.markLoaded(m.paging, ctx.page)
+    ' The first page read from a letter's start search may begin a little
+    ' before the letter's first item.
+    if ctx.page = 0 then m.paging.start = m.paging.base + letters.leadingSkip(items, m.target, m.reverse)
+    first = paging.firstIndex(m.paging, ctx.page)
+    shown = fillPage(items, first)
+    ' A short page ends the list.
+    if items.Count() < m.paging.pageSize then setTotal(first + items.Count())
+    log.debug("library", "page", { tab: ctx.tab, page: ctx.page, got: items.Count(), shown: shown, total: m.paging.total, letter: m.target })
+    focus = focusIndex()
+    if ctx.page = 0
+        speakList(currentView(), true)
+        findEnd()
+    else if focus >= first and focus < first + items.Count()
+        ' The focused placeholder was filled in.
+        m.top.focusedItem = itemAt(focus)
+        speakList(currentView())
+    end if
+    topUp(focus)
+    loadPages(focus)
+end sub
+
+' Puts a page's items at content index first on (replacing placeholders,
+' adding items past the end), leaving out any before the content's start
+' or past its end; in a letter subset, an item past the letter ends the
+' listing there. Returns how many were put in.
+function fillPage(items as object, first as integer) as integer
     listView = isListView()
     ' List rows show small covers (and a track's duration); grids show
     ' posters.
     imageSize = 256
     if listView then imageSize = 80
-    for each item in items
-        n = itemNode(item, imageSize)
-        if listView and ma.mediaTypeOf(item) = "track" then n.ShortDescriptionLine2 = util.formatDuration(util.get(item, "duration", 0))
-        ' An artist's second line would only say "Artist" on every row;
-        ' without one, the name is centered in the row (TrackRow).
-        if listView and ma.mediaTypeOf(item) = "artist" then n.description = ""
-        if listView then speech.describeRow(n, util.get(item, "duration"))
-        m.content.appendChild(n)
-    end for
-    m.offset = m.offset + items.Count()
-    if items.Count() < PAGE_SIZE then m.exhausted = true
-    ' Until the last page, the screen reader can't say "of N".
-    m.listOpenEnded[m.grid.id] = not m.exhausted
-    m.listOpenEnded[m.list.id] = not m.exhausted
-    speakList(currentView(), true)
-    log.debug("library", "page", { tab: ctx.tab, got: items.Count(), total: m.offset })
-    if m.content.getChildCount() = 0
-        if m.favoritesOnly
-            showEmpty("No favorites here yet.")
-        else
-            showEmpty("Nothing in your library here yet.")
+    shown = 0
+    for k = 0 to items.Count() - 1
+        i = first + k
+        item = items[k]
+        if m.paging.total >= 0 and i >= m.paging.total then exit for
+        if m.target <> letters.ALL and letters.place(item, m.target, m.reverse) = "after"
+            setTotal(i)
+            exit for
         end if
-    end if
-end sub
+        if i >= 0
+            n = itemNode(item, imageSize)
+            if listView and ma.mediaTypeOf(item) = "track" then n.ShortDescriptionLine2 = util.formatDuration(util.get(item, "duration", 0))
+            ' An artist's second line would only say "Artist" on every row;
+            ' without one, the name is centered in the row (TrackRow).
+            if listView and ma.mediaTypeOf(item) = "artist" then n.description = ""
+            if listView then speech.describeRow(n, util.get(item, "duration"))
+            extent = m.content.getChildCount()
+            if i < extent
+                m.content.replaceChild(n, i)
+            else
+                if i > extent then m.content.createChildren(i - extent, "ContentNode")
+                m.content.appendChild(n)
+            end if
+            shown = shown + 1
+        end if
+    end for
+    return shown
+end function
 
 sub showEmpty(text as string)
+    log.debug("library", "empty", { text: text })
     m.empty.text = text
     m.empty.visible = true
 end sub
@@ -313,13 +648,32 @@ function itemAt(idx as integer) as dynamic
 end function
 
 sub onFocused()
-    idx = currentView().itemFocused
-    m.top.focusedItem = itemAt(idx)
-    if idx >= m.content.getChildCount() - PREFETCH_MARGIN then loadMore()
+    focus = focusIndex()
+    m.top.focusedItem = itemAt(focus)
+    topUp(focus)
+    loadPages(focus)
+end sub
+
+' While a scroll moves (Down held), the page under the focus row loads.
+' This runs on every animation step, so it only compares page numbers
+' (loadPages returns at once while a page is loading).
+sub onFocusRow()
+    view = currentView()
+    row = view.currFocusRow
+    if not util.isNumber(row) or row < 0 then return
+    idx = Int(row)
+    if view.isSameNode(m.grid) then idx = idx * GRID_COLUMNS
+    if idx <> m.lastScrollIdx
+        m.lastScrollIdx = idx
+        log.debug("library", "scroll", { index: idx })
+    end if
+    loadPages(idx)
 end sub
 
 sub onSelected()
     item = itemAt(currentView().itemSelected)
+    ' A placeholder whose page hasn't loaded yet.
+    if item = invalid then return
     if ma.mediaTypeOf(item) = "track"
         actions.play(item, "play")
     else
@@ -393,7 +747,8 @@ sub onLibraryOption(event as object)
     fields = librarysort.fieldsFor(m.tabs[m.tabIndex].id)
     s = currentSort()
     if idx < fields.Count()
-        ' Keep the direction, so the field sorts as its label said.
+        ' Keep the direction, so the field sorts as its label said. (The
+        ' menu opens only under All: letters have no Sort.)
         setSort(fields[idx], s.reverse)
         loadTab()
         closeLibraryOptions()
@@ -409,22 +764,67 @@ sub onLibraryOption(event as object)
     loadTab()
 end sub
 
-' Down from the tab row: into the shown tab's grid or list.
+' --- levels: tab row, letter row (Artists, Albums), grid or list ---
+' Up and Down move between them, aiming at what's most directly above or
+' below; Back goes up one level, to the shown tab or letter (the nav bar
+' is the level above the tab row: MainScene).
+
+' Down from the tab row: to the letter row, else the grid or list.
 sub leaveTabs()
-    ' Aim: in a grid, land on the top-row item under the cursor.
+    x = cursorCenterX()
+    m.inTabs = false
+    m.slot = "tab"
+    if hasLetters()
+        focusLetters(x)
+    else
+        enterContent(x)
+    end if
+end sub
+
+' The letter row, its cursor nearest x (-1: on the shown letter).
+sub focusLetters(x as float)
+    m.inTabs = false
+    m.inLetters = true
+    m.letterRow.aimX = x
+    m.focusTarget = m.letterRow
+    m.letterRow.setFocus(true)
+    renderTabs()
+end sub
+
+' The grid or list; in a grid, the top-row item under x.
+sub enterContent(x as float)
     view = currentView()
     if view.isSameNode(m.grid) and m.content <> invalid and m.content.getChildCount() > 0
-        col = gridColumnAt(cursorCenterX())
+        col = gridColumnAt(x)
         if col > m.content.getChildCount() - 1 then col = m.content.getChildCount() - 1
-        log.debug("library", "aim down", { x: cursorCenterX(), column: col })
+        log.debug("library", "aim down", { x: x, column: col })
         m.grid.jumpToItem = col
     end if
     m.inTabs = false
-    m.slot = "tab"
+    m.inLetters = false
     m.focusTarget = view
     m.focusTarget.setFocus(true)
     renderTabs()
 end sub
+
+' The tab row: its cursor nearest x, or on the shown tab (x < 0).
+sub focusTabs(x as float)
+    m.inTabs = true
+    m.inLetters = false
+    m.slot = "tab"
+    m.tabCursor = m.tabIndex
+    if x >= 0 then aimTabRowAt(x)
+    m.focusTarget = m.tabsGroup
+    m.tabsGroup.setFocus(true)
+    renderTabs()
+end sub
+
+' The focused grid column's center on screen (list rows: -1, full width).
+function contentCursorX() as float
+    if not currentView().isSameNode(m.grid) then return -1
+    col = m.grid.itemFocused mod GRID_COLUMNS
+    return GRID_X + col * GRID_PITCH + GRID_ITEM_W / 2
+end function
 
 ' --- aiming between the tab row and the grid ---
 ' Up and Down between the two rows move to the item most directly above
@@ -444,7 +844,7 @@ function tabRowSlots() as object
         slots.Push({ slot: "tab", index: i, x: origin[0] + b.x + b.w / 2 })
     end for
     slots.Push({ slot: "view", index: -1, x: m.viewLabel.translation[0] + focusring.textSize(m.viewLabel).w / 2 })
-    slots.Push({ slot: "sort", index: -1, x: m.filterLabel.translation[0] + focusring.textSize(m.filterLabel).w / 2 })
+    if sortShown() then slots.Push({ slot: "sort", index: -1, x: m.filterLabel.translation[0] + focusring.textSize(m.filterLabel).w / 2 })
     return slots
 end function
 
@@ -475,6 +875,20 @@ end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
+    if m.inLetters
+        ' The letter row took Left, Right, and OK itself.
+        if key = "up"
+            focusTabs(m.letterRow.cursorX)
+            return true
+        else if key = "back"
+            focusTabs(-1)
+            return true
+        else if key = "down"
+            enterContent(m.letterRow.cursorX)
+            return true
+        end if
+        return false
+    end if
     if m.inTabs and m.slot <> "tab"
         ' On the view or sort label.
         if key = "left"
@@ -489,8 +903,8 @@ function onKeyEvent(key as string, press as boolean) as boolean
             renderTabs()
             return true
         else if key = "right"
-            if m.slot = "sort"
-                ' The row wraps: right of Sort is the first tab.
+            if m.slot = "sort" or not sortShown()
+                ' The row wraps: right of its last label is the first tab.
                 m.slot = "tab"
                 m.tabCursor = 0
             else
@@ -517,8 +931,8 @@ function onKeyEvent(key as string, press as boolean) as boolean
             return true
         end if
         if key = "left" and m.tabCursor = 0
-            ' The row wraps: left of the first tab is Sort.
-            m.slot = "sort"
+            ' The row wraps: left of the first tab is its last label.
+            if sortShown() then m.slot = "sort" else m.slot = "view"
             renderTabs()
             return true
         else if key = "left" and m.tabCursor > 0
@@ -544,18 +958,13 @@ function onKeyEvent(key as string, press as boolean) as boolean
     end if
     if key = "up"
         ' The grid/list didn't consume Up, so we're on its first row. From
-        ' a grid, aim at the tab row slot above the focused column; from a
-        ' list (full-width rows), start on the shown tab.
-        m.inTabs = true
-        m.slot = "tab"
-        m.tabCursor = m.tabIndex
-        if currentView().isSameNode(m.grid)
-            col = m.grid.itemFocused mod GRID_COLUMNS
-            aimTabRowAt(GRID_X + col * GRID_PITCH + GRID_ITEM_W / 2)
-        end if
-        m.focusTarget = m.tabsGroup
-        m.tabsGroup.setFocus(true)
-        renderTabs()
+        ' a grid, aim at the letter or tab above the focused column; from a
+        ' list (full-width rows), start on the shown letter or tab.
+        if hasLetters() then focusLetters(contentCursorX()) else focusTabs(contentCursorX())
+        return true
+    else if key = "back"
+        ' Up one level, to the shown letter or tab.
+        if hasLetters() then focusLetters(-1) else focusTabs(-1)
         return true
     end if
     return false

@@ -14,6 +14,9 @@ sub init()
     m.list.ObserveField("itemFocused", "onFocused")
     speakLists([m.list])
     m.global.ObserveFieldScoped("queueState", "onQueueState")
+    ' The Roku starting another track moves "NOW" before the queue poll.
+    m.lastPlayingId = util.str(util.get(m.global.nowPlaying, "queueItemId"), "")
+    m.global.ObserveFieldScoped("nowPlaying", "onNowPlaying")
     m.focusTarget = m.list
     m.lastKey = ""
     m.top.ObserveField("params", "onParams")
@@ -28,6 +31,13 @@ sub onQueueState()
     q = m.global.queueState
     key = util.str(util.getPath(q, "current_item.queue_item_id"), "") + "|" + util.str(util.get(q, "items"), "")
     if key <> m.lastKey then refresh()
+end sub
+
+sub onNowPlaying()
+    id = util.str(util.get(m.global.nowPlaying, "queueItemId"), "")
+    if id = m.lastPlayingId then return
+    m.lastPlayingId = id
+    if m.list.content <> invalid then refresh()
 end sub
 
 sub refresh()
@@ -54,6 +64,19 @@ sub onItems(resp as object, ctx as dynamic)
     root = CreateObject("roSGNode", "ContentNode")
     i = m.windowStart
     focusIdx = 0
+    ' "NOW" marks the track the Roku is playing. MA's current index is
+    ' only the fallback: its queue can be a track ahead (its Roku provider
+    ' can take a new stream's start for a track change).
+    playingId = util.str(util.get(m.global.nowPlaying, "queueItemId"), "")
+    nowIndex = m.currentIndex
+    if playingId <> ""
+        j = m.windowStart
+        for each qi in resp.data
+            if util.str(util.get(qi, "queue_item_id"), "") = playingId then nowIndex = j
+            j = j + 1
+        end for
+    end if
+    if nowIndex <> m.currentIndex then log.info("queue", "the playing track isn't MA's current one", { playing: nowIndex, maCurrent: m.currentIndex })
     for each qi in resp.data
         mi = util.get(qi, "media_item")
         n = CreateObject("roSGNode", "ContentNode")
@@ -68,7 +91,7 @@ sub onItems(resp as object, ctx as dynamic)
         art = images.urlFor(server(), mi, 80)
         if art = "" then art = images.proxyUrl(server(), util.get(qi, "image"), 80)
         n.HDPosterUrl = art
-        if i = m.currentIndex
+        if i = nowIndex
             n.ShortDescriptionLine1 = "NOW"
             focusIdx = root.getChildCount()
         else
@@ -76,7 +99,7 @@ sub onItems(resp as object, ctx as dynamic)
         end if
         n.ShortDescriptionLine2 = util.formatDuration(util.get(qi, "duration", 0))
         lead = ""
-        if i = m.currentIndex then lead = "now playing"
+        if i = nowIndex then lead = "now playing"
         speech.describeRow(n, util.get(qi, "duration"), lead)
         n.AddFields({ item: { queue_item_id: qi.queue_item_id, index: i, media_item: mi } })
         root.appendChild(n)
@@ -87,7 +110,7 @@ sub onItems(resp as object, ctx as dynamic)
     speakList(m.list, true)
     m.empty.visible = root.getChildCount() = 0
     total = util.get(m.global.queueState, "items")
-    if util.isNumber(total) then m.count.text = total.ToStr() + " items"
+    if util.isNumber(total) then m.count.text = util.counted(total, "item")
 end sub
 
 function entryAt(idx as integer) as dynamic
@@ -112,19 +135,27 @@ end sub
 sub showQueueOptions(e as object)
     m.optEntry = e
     title = util.str(util.getPath(e, "media_item.name"), "Queue item")
-    showMenu(title, ["Play now", "Play next", "Remove from queue"], onQueueOption)
+    ids = ["playnow", "playnext", "remove"]
+    labels = ["Play now", "Play next", "Remove from queue"]
+    mi = util.get(e, "media_item")
+    if util.isAA(mi) then addViewOptions(mi, ids, labels)
+    m.queueOptIds = ids
+    showMenu(title, labels, onQueueOption)
 end sub
 
 sub onQueueOption(choice as integer)
     e = m.optEntry
-    log.debug("queue", "option", { choice: choice })
-    if choice = 0
+    id = m.queueOptIds[choice]
+    log.debug("queue", "option " + id)
+    if id = "playnow"
         actions.queueCommand("player_queues/play_index", { index: e.queue_item_id })
-    else if choice = 1
+    else if id = "playnext"
         actions.queueCommand("player_queues/move_item", { queue_item_id: e.queue_item_id, pos_shift: 0 })
         actions.toast("Playing next")
-    else if choice = 2
+    else if id = "remove"
         actions.queueCommand("player_queues/delete_item", { item_id_or_index: e.queue_item_id })
         actions.toast("Removed")
+    else if id = "artist" or id = "album"
+        viewOption(e.media_item, id)
     end if
 end sub

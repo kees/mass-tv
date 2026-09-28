@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds: shows which characters Roku's system font can draw.
+     Over a black screen, a top row of reference cells (a character known
+     to be missing, U+25C0, and an unassigned one, U+0378, both drawn as
+     the font's box; then "A"), then 512 characters from `start` in 32
+     columns and 16 rows, one per 60x60 cell (FHD coordinates), centered.
+     The top row's last 16 cells show `start` in binary (a white square
+     per set bit, bit 0 last), identifying the page in a screenshot.
+     tools/glyph_probe.py screenshots it and compares each cell with the
+     reference box. Set by the masstv_glyphs launch param (MainScene). -->
+<component name="GlyphProbe" extends="Group">
+    <interface>
+        <field id="start" type="integer" value="-1" onChange="render" />
+        <field id="bold" type="boolean" value="false" onChange="render" />
+    </interface>
+    <children>
+        <Rectangle id="bg" color="#000000" width="1920" height="1080" />
+        <Group id="cells" />
+    </children>
+</component>

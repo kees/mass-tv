@@ -27,6 +27,8 @@
         <Group id="window">
             <Label id="body" color="#D8DCE6" font="font:MediumSystemFont" wrap="true" lineSpacing="6" />
         </Group>
+        <!-- Right of the text: how long it is and where the view is. -->
+        <ScrollIndicator id="scrollbar" />
         <Label id="hint" text="Up/Down to scroll" color="#9A9FB0" font="font:SmallSystemFont" visible="false" />
         <ButtonRow id="closeButton" minWidth="160" />
     </children>

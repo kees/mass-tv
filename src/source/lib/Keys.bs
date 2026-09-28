@@ -1,42 +1,86 @@
 import "pkg:/source/lib/Util.bs"
 
-' Remote-key gestures: tap vs hold on rewind and fast
-' forward. Pure; time is passed in.
+' Remote-key gestures: tap vs hold on rewind, fast forward, and
+' Play/Pause. A hold acts as soon as the key has been down HOLD_MS (the
+' scene's timer calls held), and that key's release is then ignored; a
+' tap acts on the release. Pure; time is passed in.
+'
+' No race: the timer's fire and the key's release both arrive on the
+' render thread, one after the other. If the release comes first, it
+' clears downKey, so a fire queued behind it finds nothing held.
 namespace keys
 
     const HOLD_MS = 600
     ' Also the instant replay step: Roku certification requires replay to
     ' rewind 10 to 25 seconds.
     const SEEK_STEP = 10
+    ' A timer can fire a little early by the clock: a hold counts from
+    ' this much before HOLD_MS.
+    const HOLD_SLACK_MS = 50
 
     function initial() as object
-        return { downKey: "", downAt: 0 }
+        return { downKey: "", downAt: 0, fired: false }
+    end function
+
+    ' Whether key is a tap-or-hold key (the scene starts its hold timer
+    ' when one goes down).
+    function holdable(key as string) as boolean
+        return key = "rewind" or key = "fastforward" or key = "play"
     end function
 
     ' Returns { state, action } where action is one of:
-    '   "", "seekBack", "seekForward", "previous", "next", "toggle"
+    '   "", "seekBack", "seekForward", "toggle" (taps, on release)
     function handle(state as object, key as string, press as boolean, nowMs as dynamic) as object
         s = util.copyAA(state)
         action = ""
-        if key = "rewind" or key = "fastforward"
+        if keys.holdable(key)
             if press
-                s.downKey = key
-                s.downAt = nowMs
+                ' A repeat of a key already down (a remote repeating a held
+                ' key) doesn't restart it.
+                if s.downKey <> key
+                    s.downKey = key
+                    s.downAt = nowMs
+                    s.fired = false
+                end if
             else if s.downKey = key
-                held = nowMs - s.downAt
                 s.downKey = ""
-                if held >= keys.HOLD_MS
-                    if key = "rewind" then action = "previous" else action = "next"
+                if s.fired
+                    ' The hold already acted.
+                else if nowMs - s.downAt >= keys.HOLD_MS
+                    ' The timer didn't get there first: act on the hold now.
+                    action = keys.holdAction(key)
+                else if key = "play"
+                    action = "toggle"
+                else if key = "rewind"
+                    action = "seekBack"
                 else
-                    if key = "rewind" then action = "seekBack" else action = "seekForward"
+                    action = "seekForward"
                 end if
             end if
         else if key = "replay"
             if press then action = "seekBack"
-        else if key = "play"
-            if press then action = "toggle"
         end if
         return { state: s, action: action }
+    end function
+
+    ' The hold timer fired: { state, action }, action the held key's hold
+    ' action ("previous", "next", "nowPlaying"), or "" when nothing is held
+    ' long enough (released already, or a later press).
+    function held(state as object, nowMs as dynamic) as object
+        s = util.copyAA(state)
+        action = ""
+        if s.downKey <> "" and not s.fired and nowMs - s.downAt >= keys.HOLD_MS - keys.HOLD_SLACK_MS
+            s.fired = true
+            action = keys.holdAction(s.downKey)
+        end if
+        return { state: s, action: action }
+    end function
+
+    function holdAction(key as string) as string
+        if key = "play" then return "nowPlaying"
+        if key = "rewind" then return "previous"
+        if key = "fastforward" then return "next"
+        return ""
     end function
 
     ' Keys the Scene handles globally; screens must not consume them.

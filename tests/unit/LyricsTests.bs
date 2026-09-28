@@ -1,0 +1,43 @@
+sub lyricsTests()
+    tst.begin("lyrics")
+    tst.eq(lyrics.parseTime("00:15.40"), 15.4, "mm:ss.xx")
+    tst.eq(lyrics.parseTime("01:02"), 62, "mm:ss")
+    tst.eq(lyrics.parseTime("01:02.5"), 62.5, "one decimal")
+    tst.eq(lyrics.parseTime("01:02:50"), 62.5, "a colon before the hundredths")
+    tst.eq(lyrics.parseTime("ar:Someone"), invalid, "a tag isn't a time")
+    tst.eq(lyrics.parseTime("offset:+500"), invalid, "offset isn't a time")
+
+    lf = Chr(10)
+    lrc = "[ti:A Song]" + lf + "[ar:Someone]" + lf + "[00:15.40] First line" + lf + "[00:21.61]Second line" + Chr(13) + lf + "[00:30.00]" + lf + "[00:40.00][01:20.00]Chorus" + lf + "not timed"
+    got = lyrics.parseLrc(lrc)
+    tst.eq(got.Count(), 5, "timed lines only, a repeated line once per time")
+    tst.eq(got[0], { t: 15.4, text: "First line" }, "first line, trimmed")
+    tst.eq(got[1].text, "Second line", "a CRLF line")
+    tst.eq(got[2], { t: 30, text: lyrics.GAP }, "an empty timed line is a gap")
+    tst.eq(got[3], { t: 40, text: "Chorus" }, "a line with two times, first")
+    tst.eq(got[4], { t: 80, text: "Chorus" }, "and again, in time order")
+    shifted = lyrics.parseLrc("[offset:+500]" + lf + "[00:10.00]Earlier" + lf + "[00:00.20]Start")
+    tst.eq(shifted[0], { t: 0, text: "Start" }, "offset shifts earlier, not below 0")
+    tst.eq(shifted[1].t, 9.5, "a positive offset shows lines sooner")
+    tst.eq(lyrics.parseLrc(""), [], "no synced lyrics")
+
+    plain = lyrics.parsePlain(lf + "Verse one" + lf + "line two" + lf + lf + "Verse two" + lf + lf)
+    tst.eq(plain.Count(), 4, "blank lines between verses kept, at the ends dropped")
+    tst.eq(plain[2], { t: invalid, text: "" }, "the verse break")
+    tst.eq(lyrics.parsePlain("   "), [], "nothing")
+
+    tst.eq(lyrics.fromReply(["Plain", "[00:01.00]Timed"]).synced, true, "synced lyrics first")
+    tst.eq(lyrics.fromReply(["Plain", invalid]).lines[0].text, "Plain", "else plain")
+    tst.eq(lyrics.fromReply(["Plain", invalid]).synced, false, "plain isn't synced")
+    tst.eq(lyrics.fromReply(["Plain", "no timestamps here"]).lines[0].text, "Plain", "LRC text without timestamps: plain")
+    tst.eq(lyrics.fromReply([invalid, invalid]).lines, [], "no lyrics")
+    tst.eq(lyrics.fromReply(invalid).lines, [], "no reply")
+
+    lines = got
+    tst.eq(lyrics.lineAt(lines, 3), -1, "before the first line")
+    tst.eq(lyrics.lineAt(lines, 15.4), 0, "at a line's start")
+    tst.eq(lyrics.lineAt(lines, 25), 1, "between lines: the one that started")
+    tst.eq(lyrics.lineAt(lines, 60), 3, "the chorus")
+    tst.eq(lyrics.lineAt(lines, 500), 4, "after the last")
+    tst.eq(lyrics.lineAt([], 5), -1, "no lines")
+end sub

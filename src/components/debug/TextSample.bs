@@ -1,0 +1,29 @@
+import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Fonts.bs"
+
+sub init()
+    m.texts = m.top.findNode("texts")
+end sub
+
+sub render()
+    m.texts.removeChildrenIndex(m.texts.getChildCount(), 0)
+    font = CreateObject("roSGNode", "Font")
+    font.uri = m.top.fontUri
+    font.size = m.top.size
+    y = 60
+    for each line in m.top.lines
+        lbl = CreateObject("roSGNode", "Label")
+        lbl.color = "#FFFFFF"
+        lbl.translation = [96, y]
+        if m.top.viaLabel
+            lbl.font = "font:LargeSystemFont"
+            fonts.label(lbl, line)
+        else
+            lbl.font = font
+            lbl.text = line
+        end if
+        m.texts.appendChild(lbl)
+        y = y + m.top.size * 1.6
+    end for
+    log.info("sample", "shown", { lines: m.top.lines.Count(), font: m.top.fontUri, size: m.top.size })
+end sub

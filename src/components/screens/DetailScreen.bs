@@ -1,9 +1,13 @@
 import "pkg:/source/lib/Store.bs"
 
 const MAX_TRACKS_SHOWN = 500
+' Cards per artist row (albums and the compilations an artist appears on
+' can run to hundreds).
+const ARTIST_ROW_MAX = 50
 
 sub init()
     m.logTag = "detail"
+    m.empty = m.top.findNode("empty")
     m.art = m.top.findNode("art")
     m.kind = m.top.findNode("kind")
     m.titleLabel = m.top.findNode("title")
@@ -28,6 +32,12 @@ sub init()
     m.sortBy = ""
     m.top.ObserveField("params", "onParams")
     m.global.ObserveFieldScoped("queueState", "onQueueState")
+    ' The source names can arrive after the page opens (just after launch).
+    m.global.ObserveFieldScoped("musicSources", "onMusicSources")
+end sub
+
+sub onMusicSources()
+    if m.item <> invalid then layoutText()
 end sub
 
 sub onParams()
@@ -68,28 +78,36 @@ end sub
 ' - album with a description: subtitle and info joined on one line
 '   ("Artist · 2009 · 12 tracks · 47:09"), the description on two below;
 ' - otherwise: subtitle, then info (track count and length).
+' An album's info ends with where it comes from, as MA names the source
+' ("12 tracks · 47:09 · <source>", ma.sourceText).
 sub layoutText()
     desc = ""
     if m.isArtist or m.type = "album" then desc = ma.descriptionOf(m.item)
     subtitle = ma.subtitleOf(m.item)
     info = util.str(m.infoText, "")
+    if m.type = "album"
+        source = ma.sourceText(m.item, m.global.musicSources)
+        if source <> "" and info <> "" then info = info + " · " + source
+        if source <> "" and info = "" then info = source
+        log.debug("detail", "info", { text: info })
+    end if
     fonts.label(m.about, desc)
     m.about.visible = desc <> ""
     if m.isArtist
         fonts.label(m.subtitle, "")
-        m.info.text = ""
+        fonts.label(m.info, "")
         m.about.translation = [480, 134]
         m.about.maxLines = 3
     else if desc <> ""
         line = subtitle
         if line <> "" and info <> "" then line = line + " · "
         fonts.label(m.subtitle, line + info)
-        m.info.text = ""
+        fonts.label(m.info, "")
         m.about.translation = [480, 178]
         m.about.maxLines = 2
     else
         fonts.label(m.subtitle, subtitle)
-        m.info.text = info
+        fonts.label(m.info, info)
     end if
     ' Said before the focused button when the buttons get focus: "Goldberg
     ' Variations, album, Kimiko Ishizaka, 2012".
@@ -262,13 +280,28 @@ sub loadChildren()
         m.rowRoot = CreateObject("roSGNode", "ContentNode")
         m.rows.content = m.rowRoot
         m.artistPending = 3
-        for each spec in [["top", "Top tracks", "music/artists/top_tracks"], ["albums", "Albums", "music/artists/artist_albums"], ["similar", "Similar artists", "music/artists/similar_artists"]]
+        m.ownAlbums = invalid
+        m.artistTracks = invalid
+        ' Rows in this order, each shown only when it has something: the
+        ' artist's albums, the albums it appears on (filled from its
+        ' tracks, below), its top tracks, similar artists.
+        for each spec in [["albums", "Albums", "music/artists/artist_albums"], ["appears", "Appears on", ""], ["top", "Top tracks", "music/artists/top_tracks"], ["similar", "Similar artists", "music/artists/similar_artists"]]
             row = m.rowRoot.CreateChild("ContentNode")
             row.title = spec[1]
-            a = util.copyAA(args)
-            if spec[0] = "similar" then a.limit = 25
-            apic.call(spec[2], a, onArtistRow, { row: row }, opts)
+            if spec[0] = "appears"
+                m.appearsRow = row
+            else
+                a = util.copyAA(args)
+                if spec[0] = "similar" then a.limit = 25
+                apic.call(spec[2], a, onArtistRow, { row: row, kind: spec[0] }, opts)
+            end if
         end for
+        ' A library artist's tracks, for the albums it appears on without
+        ' being their album artist (compilations).
+        if prov = "library"
+            m.artistPending = m.artistPending + 1
+            apic.call("music/artists/artist_tracks", args, onArtistRow, { row: invalid, kind: "tracks" }, opts)
+        end if
     end if
 end sub
 
@@ -290,7 +323,7 @@ sub onTracks(resp as object, ctx as dynamic)
         d = util.get(t, "duration", 0)
         if util.isNumber(d) then total = total + d
     end for
-    info = count.ToStr() + " tracks"
+    info = util.counted(count, "track")
     if total > 0 then info = info + " · " + util.formatDuration(total)
     if count > MAX_TRACKS_SHOWN then info = info + " · showing first " + MAX_TRACKS_SHOWN.ToStr()
     m.infoText = info
@@ -324,11 +357,18 @@ sub renderTracks()
 end sub
 
 sub onArtistRow(resp as object, ctx as object)
-    if resp.ok and util.isArray(resp.data)
-        for each it in resp.data
-            ctx.row.appendChild(itemNode(it))
+    data = []
+    if resp.ok and util.isArray(resp.data) then data = resp.data
+    if ctx.kind = "tracks"
+        m.artistTracks = data
+    else
+        for each it in data
+            if ctx.row.getChildCount() < ARTIST_ROW_MAX then ctx.row.appendChild(itemNode(it))
         end for
+        if ctx.kind = "albums" then m.ownAlbums = data
     end if
+    ' Once both are in: the albums it appears on, without its own.
+    if ctx.kind = "albums" or ctx.kind = "tracks" then addAppearsOn()
     ' Only the first row shows before scrolling: wait for that one.
     if m.rowRoot.getChild(0).getChildCount() > 0 then m.loadingIndicator.active = false
     ' Once every row has answered, drop the empty ones (their headings
@@ -339,6 +379,24 @@ sub onArtistRow(resp as object, ctx as object)
     for i = m.rowRoot.getChildCount() - 1 to 0 step -1
         if m.rowRoot.getChild(i).getChildCount() = 0 then m.rowRoot.removeChildIndex(i)
     end for
+    log.debug("detail", "artist rows", { rows: m.rowRoot.getChildCount() })
+    if m.rowRoot.getChildCount() = 0
+        m.empty.text = "Music Assistant has no top tracks, albums, or similar artists for " + ma.titleOf(m.item) + "."
+        m.empty.visible = true
+    end if
+end sub
+
+' The albums a library artist appears on without being their album artist
+' (from its tracks; MA lists only the others as its albums): the Appears
+' on row, as MA's web UI has it.
+sub addAppearsOn()
+    if m.ownAlbums = invalid or m.artistTracks = invalid then return
+    extra = ma.appearsOnAlbums(m.artistTracks, m.ownAlbums)
+    log.debug("detail", "appears on", { own: m.ownAlbums.Count(), more: extra.Count() })
+    for each a in extra
+        if m.appearsRow.getChildCount() < ARTIST_ROW_MAX then m.appearsRow.appendChild(itemNode(a))
+    end for
+    m.artistTracks = invalid
 end sub
 
 sub onButton()
@@ -427,9 +485,11 @@ function onKeyEvent(key as string, press as boolean) as boolean
         aim.moveFocus(content, m.buttons)
         setFocusedPlay(invalid)
         return true
-    else if (key = "left" or key = "right") and not m.isArtist and content.isInFocusChain()
-        ' The track list has no use for Left/Right: jump to the buttons. The
-        ' list keeps its focused track, so Down comes back to it.
+    else if ((key = "left" or key = "right") and not m.isArtist and content.isInFocusChain()) or (key = "back" and content.isInFocusChain())
+        ' The track list has no use for Left/Right: jump to the buttons.
+        ' Back from the tracks or an artist's rows goes up a level, to the
+        ' buttons too (Back there leaves the page). The list keeps its
+        ' focused item, so Down comes back to it.
         m.focusTarget = m.buttons
         m.buttons.setFocus(true)
         setFocusedPlay(invalid)

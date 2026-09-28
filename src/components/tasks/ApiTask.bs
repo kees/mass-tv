@@ -124,7 +124,7 @@ sub respond(entry as object, code as integer, data as dynamic, errorText as stri
     ms = now - entry.startedAt
     result = {
         id: util.str(req.id, "")
-        command: util.str(req.command, util.str(req.path, ""))
+        command: describeCommand(req)
         ok: kind = "ok"
         kind: kind
         status: code
@@ -139,6 +139,12 @@ sub respond(entry as object, code as integer, data as dynamic, errorText as stri
     end if
     m.top.response = result
 end sub
+
+' The command, or for a plain GET its path ("/info").
+function describeCommand(req as object) as string
+    if util.isNonEmptyString(req.command) then return req.command
+    return util.str(req.path, "")
+end function
 
 function describe(req as object) as string
     if util.isNonEmptyString(req.command) then return req.command

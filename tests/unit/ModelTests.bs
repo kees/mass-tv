@@ -83,6 +83,74 @@ sub maApiTests()
     tst.eq(ma.elapsedOf(q, 1005.5), 10, "elapsed paused")
     tst.eq(ma.elapsedOf(invalid, 1), 0, "elapsed invalid")
 
+    ' The queue item for what's playing: current, next, or recent.
+    cur = { queue_item_id: "q1", media_item: { media_type: "track", name: "First", artists: [{ name: "A" }] } }
+    nxt = { queue_item_id: "q2", media_item: { media_type: "track", name: "Second", artists: [{ name: "B" }] } }
+    old = { queue_item_id: "q0", media_item: { media_type: "track", name: "Before" } }
+    queue = { current_item: cur, next_item: nxt, recent_items: [cur, nxt, old] }
+    tst.eq(ma.queueItemById(queue, "q1").media_item.name, "First", "current item")
+    tst.eq(ma.queueItemById(queue, "q2").media_item.name, "Second", "next item (the poll lags a track change)")
+    tst.eq(ma.queueItemById(queue, "q0").media_item.name, "Before", "a recent item")
+    tst.eq(ma.queueItemById(queue, "q9"), invalid, "unknown id")
+    tst.eq(ma.queueItemById(queue, ""), invalid, "no id")
+    ' MA's queue with no current item, after the Roku moved to the
+    ' enqueued track: the recent items still have it.
+    gap = { current_item: invalid, next_item: invalid, recent_items: [cur, nxt] }
+    tst.eq(ma.queueItemById(gap, "q2").media_item.name, "Second", "found with no current item")
+    tst.eq(ma.queueItemById({}, "q1"), invalid, "empty queue")
+    np = { title: "Second", artist: "MA's B", queueItemId: "q2" }
+    tst.eq(ma.nowPlayingText(np, gap), { title: "Second", line2: "B" }, "now playing text from a recent item")
+    ' The track's year ends the second line.
+    dated = { current_item: { queue_item_id: "q3", media_item: { media_type: "track", name: "Cherubs", artists: [{ name: "An Artist" }], album: { name: "An Album", year: 2009 }, year: "2010" } } }
+    tst.eq(ma.nowPlayingText({ queueItemId: "q3" }, dated), { title: "Cherubs", line2: "An Artist · An Album · 2010" }, "year after the album")
+    tst.eq(ma.yearOf({ metadata: { release_date: "2010-01-01T00:00:00+00:00" }, album: { year: 2009 } }), "2010", "the track's release date first")
+    tst.eq(ma.yearOf({ album: { year: 2009 } }), "2009", "else its album's year")
+    tst.eq(ma.yearOf({ year: 1999 }), "1999", "a whole-number year")
+    tst.eq(ma.yearOf({ metadata: { release_date: "" }, album: { year: 0 } }), "", "no year")
+    tst.eq(ma.yearOf({ metadata: { release_date: "0000-00-00" } }), "", "a zero date isn't a year")
+    tst.eq(ma.yearOf(invalid), "", "nothing")
+    np.queueItemId = "q9"
+    tst.eq(ma.nowPlayingText(np, gap), { title: "Second", line2: "MA's B" }, "stream metadata when unknown")
+
+    ' "Various Artists" gives way to anyone else listed.
+    va = { name: "Various Artists" }
+    tst.eq(ma.artistNames({ artists: [va, { name: "Josh Woodward" }] }), "Josh Woodward", "Various Artists dropped when others are listed")
+    tst.eq(ma.artistNames({ artists: [{ name: "A" }, { name: "various artists" }, { name: "B" }] }), "A, B", "in any case and position")
+    tst.eq(ma.artistNames({ artists: [va] }), "Various Artists", "alone, it stays")
+    mbid = { name: "VA", external_ids: [["musicbrainz_artistid", "89ad4ac3-39f7-470e-963a-56509c546377"]] }
+    tst.eq(ma.artistNames({ artists: [mbid, { name: "C" }] }), "C", "known by MusicBrainz id too")
+    tst.eq(ma.subtitleOf({ media_type: "album", year: 2008, artists: [va, { name: "Bigfoot" }] }), "Bigfoot · 2008", "an album's subtitle")
+
+    ' Compilations an artist appears on, from its tracks.
+    own = [{ uri: "library://album/1", name: "Own Album" }]
+    tracks = [
+        { name: "a", album: { uri: "library://album/1", name: "Own Album", media_type: "album" } }
+        { name: "b", album: { uri: "library://album/7", name: "Various Hits" } }
+        { name: "c", album: { uri: "library://album/7", name: "Various Hits" } }
+        { name: "d", album: { uri: "library://album/9", name: "Soundtrack", media_type: "album" } }
+        { name: "e" }
+    ]
+    got = ma.appearsOnAlbums(tracks, own)
+    tst.eq(got.Count(), 2, "two compilations, each once, own album left out")
+    tst.eq(got[0].name, "Various Hits", "in the tracks' order")
+    tst.eq(got[0].media_type, "album", "an album mapping without a type is an album")
+    tst.eq(got[1].name, "Soundtrack", "the second")
+    tst.eq(ma.appearsOnAlbums(invalid, own), [], "no tracks")
+    tst.eq(ma.appearsOnAlbums(tracks, invalid).Count(), 3, "no own albums: every album")
+
+    ' Where an item comes from.
+    names = ma.sourceNames([{ instance_id: "example_music--AbC", name: "Example Music", type: "music" }, { instance_id: "filesystem_local--x1", name: "Filesystem (local disk) [music]" }, { name: "no id" }])
+    tst.eq(names, { "example_music--AbC": "Example Music", "filesystem_local--x1": "Filesystem (local disk) [music]" }, "source names by instance")
+    tst.eq(ma.sourceNames(invalid), {}, "no providers")
+    lib = { provider: "library", provider_mappings: [{ provider_domain: "example_music", provider_instance: "example_music--AbC", available: true }] }
+    tst.eq(ma.sourceText(lib, names), "Example Music", "a library album's mapping")
+    both = { provider: "library", provider_mappings: [{ provider_domain: "example_music", provider_instance: "example_music--AbC" }, { provider_domain: "filesystem_local", provider_instance: "filesystem_local--x1" }, { provider_domain: "example_music", provider_instance: "example_music--AbC" }] }
+    tst.eq(ma.sourceText(both, names), "Example Music, Filesystem (local disk) [music]", "each source once")
+    gone = { provider: "library", provider_mappings: [{ provider_domain: "example_music", provider_instance: "example_music--AbC", available: false }, { provider_domain: "other_music", provider_instance: "other_music--z9" }] }
+    tst.eq(ma.sourceText(gone, names), "other_music", "an unavailable mapping left out; an unknown source as MA gives it")
+    tst.eq(ma.sourceText({ provider: "example_music--AbC", item_id: "302127" }, names), "Example Music", "a provider item without mappings")
+    tst.eq(ma.sourceText({ provider: "library" }, names), "", "nothing to say")
+
     tst.eq(ma.queueIdForPlayer({ player_id: "P", active_source: "LEADER" }), "LEADER", "queue via active source")
     tst.eq(ma.queueIdForPlayer({ player_id: "P" }), "P", "queue is player")
 
@@ -266,10 +334,35 @@ sub keysTests()
     r = keys.handle(r.state, "replay", false, 6100)
     tst.eq(r.action, "", "replay release ignored")
     tst.ok(keys.SEEK_STEP >= 10 and keys.SEEK_STEP <= 25, "replay step within 10-25 s")
-    r = keys.handle(r.state, "play", true, 1)
-    tst.eq(r.action, "toggle", "play toggles")
-    r = keys.handle(r.state, "play", false, 2)
-    tst.eq(r.action, "", "play release ignored")
+    r = keys.handle(r.state, "play", true, 7000)
+    tst.eq(r.action, "", "play press waits")
+    r = keys.handle(r.state, "play", false, 7150)
+    tst.eq(r.action, "toggle", "play tap toggles on release")
+    ' Held: the timer acts while the key is down, and the release is eaten.
+    r = keys.handle(r.state, "play", true, 8000)
+    r = keys.held(r.state, 8600)
+    tst.eq(r.action, "nowPlaying", "play held opens Now Playing when the timer fires")
+    r = keys.handle(r.state, "play", true, 8700)
+    tst.eq(r.action, "", "a repeated press while held does nothing")
+    r = keys.held(r.state, 8800)
+    tst.eq(r.action, "", "a second fire doesn't act twice")
+    r = keys.handle(r.state, "play", false, 9000)
+    tst.eq(r.action, "", "the held key's release is ignored")
+    ' The release first: a fire queued behind it finds nothing held.
+    r = keys.handle(r.state, "play", true, 10000)
+    r = keys.handle(r.state, "play", false, 10590)
+    tst.eq(r.action, "toggle", "released just before the hold: a tap")
+    r = keys.held(r.state, 10600)
+    tst.eq(r.action, "", "the late fire does nothing")
+    ' The timer late: the release acts on the hold itself.
+    r = keys.handle(r.state, "fastforward", true, 11000)
+    r = keys.handle(r.state, "fastforward", false, 11800)
+    tst.eq(r.action, "next", "a hold the timer missed still acts on release")
+    r = keys.handle(r.state, "play", false, 12000)
+    tst.eq(r.action, "", "a release without a press does nothing")
+    r = keys.handle(r.state, "rewind", true, 13000)
+    r = keys.held(r.state, 13560)
+    tst.eq(r.action, "previous", "rewind held: previous, when the timer fires (a little early is fine)")
     tst.ok(keys.isGlobal("play") and not keys.isGlobal("OK"), "global keys")
     tst.eq(keys.clampSeek(5, -10, 200), 0, "clamp low")
     tst.eq(keys.clampSeek(195, 10, 200), 199, "clamp high")

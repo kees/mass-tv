@@ -50,6 +50,10 @@ FILE_STEM = "MassTVText"
 CJK_FONT = "NotoSansCJKjp-VF.ttf"
 LATIN_FONT = "NotoSans[wdth,wght].ttf"
 EMOJI_FONT = "NotoEmoji[wght].ttf"
+ARABIC_FONT = "NotoSansArabic[wdth,wght].ttf"
+HEBREW_FONT = "NotoSansHebrew[wdth,wght].ttf"
+# The fonts merged into the bundled one.
+BUNDLED = (CJK_FONT, LATIN_FONT, EMOJI_FONT, ARABIC_FONT, HEBREW_FONT)
 SOURCES_LIST = os.path.join(ROOT, "fonts", "sources.txt")
 
 
@@ -131,6 +135,19 @@ SET_DEFS = {
     "han-gb2312-1": lambda: codec_chars("gb2312", range(0xB0, 0xD8)),
     "han-jis-1": lambda: codec_chars("euc_jp", range(0xB0, 0xD0)),
     "han-big5-common": big5_common,
+    # Arabic script: the Arabic block and its supplement, the presentation
+    # forms of the Persian and Urdu letters (Forms-A's first part), and
+    # Forms-B, which has every basic letter's isolated, final, initial,
+    # and medial form and the lam-alef ligatures. Roku's renderer neither
+    # joins nor orders Arabic, so the app picks these forms itself
+    # (source/lib/Bidi.bs).
+    "arabic": lambda: span(0x600, 0x6FF) | span(0x750, 0x77F) | span(0xFB50, 0xFBFF) | span(0xFE70, 0xFEFF),
+    # Hebrew: the Hebrew block (letters, final forms, points, and
+    # punctuation) and its presentation forms (letters with dagesh, the
+    # Yiddish ligatures). Its letters don't join; the app orders the text
+    # (source/lib/Bidi.bs) and drops the points, which the renderer can't
+    # place.
+    "hebrew": lambda: span(0x590, 0x5FF) | span(0xFB1D, 0xFB4F),
 }
 
 # What goes in from each font. Noto Sans gives what it has of its sets;
@@ -138,6 +155,10 @@ SET_DEFS = {
 # then its own sets).
 LATIN_SETS = ["latin", "greek-cyrillic", "punctuation"]
 CJK_SETS = ["symbols", "cjk-punct", "kana", "hangul", "han-gb2312-1", "han-jis-1"]
+# Noto Sans Arabic and Noto Sans Hebrew give these (whatever the fonts
+# above don't).
+ARABIC_SETS = ["arabic"]
+HEBREW_SETS = ["hebrew"]
 # The emoji font gives every emoji it has at U+2190 and above (below
 # that it maps digits, #, *, and marks like (c) for keycap sequences,
 # which the CJK font draws as text). Below EMOJI_PICTOGRAPHS, where most
@@ -277,13 +298,13 @@ def source_timestamp():
     """The newest modification date among the source fonts (head.modified)."""
     from fontTools.ttLib import TTFont
     return max(TTFont(os.path.join(SOURCE_DIR, name), lazy=True)["head"].modified
-               for name in (CJK_FONT, LATIN_FONT, EMOJI_FONT))
+               for name in BUNDLED)
 
 
 def copyrights():
     from fontTools.ttLib import TTFont
     notices = []
-    for name in (CJK_FONT, LATIN_FONT, EMOJI_FONT):
+    for name in BUNDLED:
         text = TTFont(os.path.join(SOURCE_DIR, name), lazy=True)["name"].getDebugName(0)
         if text and text not in notices:
             notices.append(text.strip())
@@ -340,9 +361,11 @@ def cmap_of(name):
 
 
 def codes():
-    """Each source's code points, in merge order (CJK, Latin, emoji). The
-    emoji font's own (from EMOJI_FROM up) come first, then Noto Sans's of
-    LATIN_SETS, then the CJK font takes the rest."""
+    """Each source's code points, in merge order (CJK, Latin, emoji,
+    Arabic, Hebrew). The emoji font's own (from EMOJI_FROM up) come
+    first, then Noto Sans's of LATIN_SETS, then the CJK font takes the
+    rest of the wanted sets, and Noto Sans Arabic and Hebrew their
+    scripts'."""
     text_cmap = cmap_of(CJK_FONT) | cmap_of(LATIN_FONT)
     emoji_codes = {c for c in cmap_of(EMOJI_FONT)
                    if c >= EMOJI_FROM and c not in ZERO_WIDTH
@@ -350,7 +373,10 @@ def codes():
     wanted = charset(LATIN_SETS) | charset(CJK_SETS) | extra_chars()
     latin_codes = (charset(LATIN_SETS) & cmap_of(LATIN_FONT)) - emoji_codes
     cjk_codes = (wanted & cmap_of(CJK_FONT)) - emoji_codes - latin_codes
-    return [(CJK_FONT, cjk_codes), (LATIN_FONT, latin_codes), (EMOJI_FONT, emoji_codes)]
+    arabic_codes = (charset(ARABIC_SETS) & cmap_of(ARABIC_FONT)) - emoji_codes - latin_codes - cjk_codes
+    hebrew_codes = (charset(HEBREW_SETS) & cmap_of(HEBREW_FONT)) - emoji_codes - latin_codes - cjk_codes - arabic_codes
+    return [(CJK_FONT, cjk_codes), (LATIN_FONT, latin_codes), (EMOJI_FONT, emoji_codes),
+            (ARABIC_FONT, arabic_codes), (HEBREW_FONT, hebrew_codes)]
 
 
 def cmd_build(_args):

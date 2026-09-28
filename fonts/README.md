@@ -6,8 +6,21 @@ mixes Latin, CJK, and emoji needs all of them in one file. Mass TV
 switches a label to this font only when its text needs it
 (`src/source/lib/Fonts.bs`).
 
+A label switches only for a character the system font doesn't draw,
+after replacing lookalikes it does draw (U+2010 HYPHEN shows as "-",
+thin spaces as a space; invisible marks are removed). What the system
+font draws was measured on a Roku with `tools/glyph_probe.py`: Latin-1,
+most of Latin Extended-A, basic Greek and Cyrillic, common punctuation,
+and a few symbols (arrows, ✓, ♪, ★), the same in regular and bold. It
+has no Vietnamese, Hebrew, Arabic, Indic, or other scripts; the bundled
+font adds Vietnamese, the rest of Latin, Greek, and Cyrillic, Arabic,
+and Hebrew, but not Indic or the other scripts. The ranges are `drawnRanges` in
+`src/source/lib/Fonts.bs`; to measure again (e.g. on a new Roku OS), run
+a debug build and `ROKU=<name> .venv/bin/python tools/glyph_probe.py`
+(`--bold`, `--start`, `--end` in hex).
+
 `src/fonts/MassTVText-Regular.ttf` is built by `tools/make_font.py` from
-three sources pinned in `sources.txt`. Only the regular weight ships: the app emulates
+five sources pinned in `sources.txt`. Only the regular weight ships: the app emulates
 bold by drawing a bold label twice, a little apart
 (`src/components/widgets/BoldTwin`), which halves the size; the tool can
 build a real bold too (`WEIGHTS`).
@@ -17,6 +30,18 @@ build a real bold too (`WEIGHTS`).
 | Noto Sans CJK JP 2.004 (TrueType variable) | kana, Hangul, Han, CJK punctuation, symbols | `OFL-NotoSansCJK.txt` |
 | Noto Sans (google/fonts) | Latin with its extensions, Greek, Cyrillic, punctuation | `OFL-NotoSans.txt` |
 | Noto Emoji, monochrome (google/fonts) | emoji | `OFL-NotoEmoji.txt` |
+| Noto Sans Arabic (google/fonts) | Arabic script: the Arabic block, Persian and Urdu letters, and the presentation forms | `OFL-NotoSansArabic.txt` |
+| Noto Sans Hebrew (google/fonts) | Hebrew: the Hebrew block and its presentation forms | `OFL-NotoSansHebrew.txt` |
+
+Roku's renderer draws each character as one glyph, left to right: it
+doesn't join Arabic letters or order right-to-left text. So the font
+carries the presentation forms (each letter's isolated, final, initial,
+and medial shapes, and the lam-alef ligatures), and the app picks them
+and orders the line itself (`src/source/lib/Bidi.bs`, with its joining
+table from `tools/arabic_forms.py`). Hebrew letters don't join, so it
+needs only the ordering. Arabic vowel marks and Hebrew points are
+dropped, since they'd need positioning the renderer can't do. Arabic
+adds about 23 KB to the zipped package, Hebrew about 6 KB.
 
 All are under the SIL Open Font License 1.1, and so is the built font.
 None has a Reserved Font Name the build uses (Noto Sans CJK reserves

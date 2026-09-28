@@ -13,6 +13,7 @@ sub init()
     m.nextTimer.ObserveField("fire", "onNextTimeout")
     m.state = playback.initial()
     m.lastPublishedPos = -1
+    m.global.ObserveFieldScoped("keepAwake", "updateScreensaver")
     publish()
 end sub
 
@@ -55,6 +56,11 @@ sub onCommand(event as object)
         dispatch({ type: "deeplink", result: { action: "stop", media: invalid, holdQueue: false } })
     else if cmd = "restart"
         if m.state.current <> invalid then applyEffect({ do: "load", media: m.state.current })
+    else if cmd = "playEnqueued"
+        ' The scene decided not to wait for MA (see MainScene's
+        ' onAdvanceRequest): the enqueued track now, as on a timeout.
+        m.nextTimer.control = "stop"
+        dispatch({ type: "nextTimeout" })
     end if
 end sub
 
@@ -138,10 +144,11 @@ sub applyEffect(fx as object)
 end sub
 
 ' Disable the system screensaver while playing (MA sends /launch instead of
-' /input when the screensaver is up); allow it when paused or idle.
+' /input when the screensaver is up), and while a screen asks for it (the
+' Lyrics screen, paused or not); allow it otherwise.
 sub updateScreensaver()
     playing = m.state.status = "playing" or m.state.status = "loading"
-    m.video.disableScreenSaver = playing
+    m.video.disableScreenSaver = playing or m.global.keepAwake = true
 end sub
 
 sub publish()
@@ -152,6 +159,7 @@ sub publish()
     if s.pending <> invalid
         np.nextTitle = s.pending.title
         np.nextArtist = s.pending.artist
+        if s.pending.stream <> invalid then np.nextQueueItemId = s.pending.stream.queueItemId
     end if
     cur = s.current
     if cur <> invalid

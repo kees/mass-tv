@@ -1,0 +1,75 @@
+import "pkg:/source/lib/Util.bs"
+
+' Room between the list's right edge and the bar.
+const GAP = 12
+
+sub init()
+    m.bar = m.top.findNode("bar")
+    m.content = invalid
+    m.first = 0
+    m.numRows = 0
+    m.columns = 1
+end sub
+
+sub onList()
+    list = m.top.list
+    if list = invalid then return
+    m.columns = 1
+    if list.hasField("numColumns") and list.numColumns > 1 then m.columns = list.numColumns
+    rowH = list.itemSize[1]
+    rowStep = rowH + list.itemSpacing[1]
+    m.numRows = list.numRows
+    m.width = m.columns * list.itemSize[0] + (m.columns - 1) * list.itemSpacing[0]
+    m.bar.height = (m.numRows - 1) * rowStep + rowH
+    m.bar.window = m.numRows
+    if m.top.clip then list.clippingRect = [0, 0, m.width, m.bar.height]
+    list.ObserveField("translation", "place")
+    list.ObserveField("currFocusRow", "onFocused")
+    list.ObserveField("content", "onContent")
+    place()
+    onContent()
+end sub
+
+sub place()
+    list = m.top.list
+    if list = invalid then return
+    x = m.width + GAP
+    y = 0
+    if m.top.follow
+        x = x + list.translation[0]
+        y = list.translation[1]
+    end if
+    m.top.translation = [x, y]
+end sub
+
+' New content starts at the top; the list also re-announces the same
+' content node after focus moves (seen on the device), which keeps it.
+sub onContent()
+    content = m.top.list.content
+    if m.content <> invalid and content <> invalid and m.content.isSameNode(content) then return
+    if m.content <> invalid then m.content.UnobserveField("change")
+    m.content = content
+    if m.content <> invalid then m.content.ObserveField("change", "update")
+    m.first = 0
+    onFocused()
+end sub
+
+' The list reports no scroll offset. With floatingFocus it scrolls only
+' when the focus would leave the visible rows, just far enough, so the
+' first visible row follows currFocusRow (the focus row, fractional
+' through the scroll animation).
+sub onFocused()
+    f = m.top.list.currFocusRow
+    if util.isNumber(f) and f >= 0
+        if f < m.first then m.first = f
+        if f > m.first + m.numRows - 1 then m.first = f - m.numRows + 1
+    end if
+    update()
+end sub
+
+sub update()
+    count = m.top.total
+    if count <= 0 and m.content <> invalid then count = m.content.getChildCount()
+    m.bar.total = Int((count + m.columns - 1) / m.columns)
+    m.bar.offset = m.first
+end sub

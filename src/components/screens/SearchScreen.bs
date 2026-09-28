@@ -97,7 +97,7 @@ sub onResults(resp as object, ctx as object)
         m.status.text = "No results for " + Chr(34) + m.query + Chr(34) + "."
         speech.say(m.status.text)
     else
-        if total = 1 then m.status.text = "1 result" else m.status.text = total.ToStr() + " results"
+        m.status.text = util.counted(total, "result")
         ' Said with the first result, as the rows take focus.
         m.listLead = m.status.text
         m.focusTarget = m.rows

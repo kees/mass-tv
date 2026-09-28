@@ -1,0 +1,77 @@
+import "pkg:/source/lib/Util.bs"
+
+' Bookkeeping for a long listing shown in a grid or list whose items load
+' page by page, in any order (Library).
+'
+' A held Down scrolls a MarkupGrid/MarkupList only as far as the content
+' went when the hold began: items added during the hold aren't reached.
+' So once the listing's length is known, the content holds empty
+' placeholder items up to `runway` items past the focus, and the pages
+' under and near the focus fill them in, wherever the focus goes.
+'
+' Content index i is the listing's offset start + i. Pages are read at
+' base + p * pageSize, where base is the offset the reading started from
+' (a letter subset's search result) and start may lie a little past it
+' (items before the subset's first item are left out).
+namespace paging
+
+    function newState(base as integer, size as integer) as object
+        return { base: base, start: base, pageSize: size, total: -1, loaded: {}, loadingPage: -1 }
+    end function
+
+    ' The page holding content index i.
+    function pageOf(state as object, i as integer) as integer
+        return Int((state.start - state.base + i) / state.pageSize)
+    end function
+
+    ' The content index of page p's first item (negative when it starts
+    ' before the content does).
+    function firstIndex(state as object, p as integer) as integer
+        return state.base + p * state.pageSize - state.start
+    end function
+
+    function isLoaded(state as object, p as integer) as boolean
+        return state.loaded.DoesExist(p.ToStr())
+    end function
+
+    sub markLoaded(state as object, p as integer)
+        state.loaded[p.ToStr()] = true
+    end sub
+
+    ' The page to read next for a focus at index focus: the first one not
+    ' yet read under the content indices from focus - behind to focus +
+    ' ahead, the focus's own page first; -1 when they're all read. With the
+    ' length unknown, only the page just past the content (extent items)
+    ' can be read beyond it, one page at a time, as a list is read to its
+    ' end.
+    function nextPage(state as object, focus as integer, behind as integer, ahead as integer, extent as integer) as integer
+        if focus < 0 then focus = 0
+        last = focus + ahead
+        if state.total >= 0
+            if last > state.total - 1 then last = state.total - 1
+        else if last > extent
+            last = extent
+        end if
+        if last < 0 then return -1
+        first = focus - behind
+        if first < 0 then first = 0
+        if first > last then first = last
+        own = paging.pageOf(state, focus)
+        if focus <= last and not paging.isLoaded(state, own) then return own
+        for p = paging.pageOf(state, first) to paging.pageOf(state, last)
+            if not paging.isLoaded(state, p) then return p
+        end for
+        return -1
+    end function
+
+    ' How many items the content should hold for a focus at index focus:
+    ' up to runway past it, never past the listing's length, and never
+    ' fewer than it holds. Unchanged while the length is unknown.
+    function extentFor(state as object, focus as integer, runway as integer, extent as integer) as integer
+        if state.total < 0 then return extent
+        want = focus + 1 + runway
+        if want < extent then want = extent
+        if want > state.total then want = state.total
+        return want
+    end function
+end namespace

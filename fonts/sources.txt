@@ -14,6 +14,15 @@ NotoSansCJKjp-VF.ttf 240c9b83bf7b386edbae39995ae7e068ed4583f484d92e4a74c34158b5f
 noto-cjk-LICENSE 6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2 https://github.com/notofonts/noto-cjk/raw/Sans2.004/LICENSE
 NotoEmoji[wght].ttf de6c18832938afc99caf132b39d6a30a19bac7f2e812e28db2535b4608d27551 https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji/NotoEmoji%5Bwght%5D.ttf
 notoemoji-OFL.txt 500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoemoji/OFL.txt
+# Arabic script: the presentation forms (the app joins letters itself;
+# Roku's renderer doesn't), the Arabic block, and the Persian and Urdu
+# letters' forms.
+NotoSansArabic[wdth,wght].ttf 63111b5b2e074dd48cc67692e0a2726d86ee94c1c37fe8598257b7b4e87e869e https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosansarabic/NotoSansArabic%5Bwdth,wght%5D.ttf
+notosansarabic-OFL.txt 07fc70bfeb985cc1a87a8587d0a0c80bab11c86c9dc3fd95b6f0cb332f983e96 https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosansarabic/OFL.txt
+# Hebrew: the Hebrew block and its presentation forms (the app orders
+# right-to-left text itself).
+NotoSansHebrew[wdth,wght].ttf 7ef36a2c3593758cdb622e1bdef4f84523e92fbc3ccc667438dd80ff54c2de88 https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosanshebrew/NotoSansHebrew%5Bwdth,wght%5D.ttf
+notosanshebrew-OFL.txt 9b9fe028b5ba74d231659a1bbaf0ed09b11e759d1ca6a070999e16d151616b47 https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notosanshebrew/OFL.txt
 # Not part of the bundled font: tools/make_images.py draws the logo's
 # "Mass TV" in Roboto Bold (the font of Music Assistant's web UI).
 Roboto[wdth,wght].ttf d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134 https://github.com/google/fonts/raw/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/roboto/Roboto%5Bwdth,wght%5D.ttf

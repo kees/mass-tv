@@ -1,0 +1,298 @@
+import "pkg:/source/lib/Lyrics.bs"
+
+' Where the line in view sits: the middle of the clip window (y 110 to 870).
+const CENTER_Y = 490
+const LINE_GAP = 18
+const TOP_Y = 110
+const TEXT_DIM = "#8A90A0"
+const TEXT_NOW = "#FFFFFF"
+const TEXT_CURSOR = "#7FA8F5"
+' Between LYRICS and its note in the header.
+const HEADER_GAP = 16
+
+sub init()
+    m.logTag = "lyrics"
+    for each id in ["bgArt", "kind", "kindNote", "lines", "scroller", "message", "loadingIndicator", "scroll", "scrollTo", "follow", "resume", "scrollbar"]
+        m[id] = m.top.findNode(id)
+    end for
+    m.follow.ObserveField("fire", "onFollow")
+    m.resume.ObserveField("fire", "onResume")
+    m.global.ObserveFieldScoped("nowPlaying", "onNowPlaying")
+    m.global.ObserveFieldScoped("queueState", "onQueueState")
+    m.top.ObserveField("closing", "onClosing")
+    m.focusTarget = m.top
+    m.trackId = ""
+    m.trackText = ""
+    m.uri = ""
+    m.data = { synced: false, lines: [] }
+    m.labels = []
+    m.current = -1
+    m.cursor = -1
+    m.following = true
+    m.posBase = 0
+    m.posAt = 0
+    setHeaderNote("")
+    m.top.ObserveField("params", "onParams")
+end sub
+
+' The header: LYRICS, then (after a gap) whether the lyrics are timed,
+' the pair centered on the screen; LYRICS alone while there's no note.
+sub setHeaderNote(note as string)
+    m.kindNote.text = note
+    kw = m.kind.boundingRect().width
+    total = kw
+    nw = 0
+    if note <> ""
+        nw = m.kindNote.boundingRect().width
+        total = kw + HEADER_GAP + nw
+    end if
+    x = Int((1920 - total) / 2)
+    m.kind.translation = [x, 0]
+    m.kindNote.translation = [x + kw + HEADER_GAP, 0]
+end sub
+
+sub onParams()
+    ' The screensaver stays away while the lyrics show, paused or not.
+    m.global.keepAwake = true
+    onNowPlaying()
+end sub
+
+sub onClosing()
+    if m.top.closing = true
+        m.global.keepAwake = false
+        m.follow.control = "stop"
+    end if
+end sub
+
+' Tracks the playback position (published in whole seconds) to estimate it
+' between updates, and loads the lyrics when the track changes.
+sub onNowPlaying()
+    np = m.global.nowPlaying
+    at = util.get(np, "position", 0)
+    if util.isNumber(at) and at <> m.posBase
+        m.posBase = at
+        m.posAt = util.nowMs()
+    end if
+    id = util.str(util.get(np, "queueItemId"), "")
+    if id <> m.trackId
+        m.trackId = id
+        m.uri = ""
+        loadTrack()
+    end if
+end sub
+
+sub onQueueState()
+    ' The playing track can show up in the queue after it starts.
+    if m.uri = "" and m.trackId <> "" then loadTrack()
+end sub
+
+function playbackSeconds() as float
+    status = util.str(util.get(m.global.nowPlaying, "status"), "")
+    extra = 0
+    if status = "playing"
+        extra = (util.nowMs() - m.posAt) / 1000.0
+        if extra > 1.2 then extra = 1.2
+    end if
+    return m.posBase + extra
+end function
+
+sub loadTrack()
+    clearLines()
+    setHeaderNote("")
+    m.message.visible = false
+    item = ma.queueItemById(m.global.queueState, m.trackId)
+    mi = util.get(item, "media_item")
+    ' Not shown (the playing bar has it), but said with the lyrics.
+    m.trackText = speech.join([ma.titleOf(mi), ma.artistNames(mi)])
+    art = util.str(util.get(m.global.nowPlaying, "art"), "")
+    if m.bgArt.uri <> art then m.bgArt.uri = art
+    uri = ma.uriOf(mi)
+    if uri = ""
+        if m.trackId = ""
+            showMessage("Nothing is playing.")
+        else
+            ' Not in the polled queue yet (onQueueState tries again).
+            m.loadingIndicator.active = true
+        end if
+        return
+    end if
+    m.uri = uri
+    m.loadingIndicator.active = true
+    ' The full track first: metadata/get_track_lyrics takes a whole Track
+    ' (the queue's copy lacks provider_mappings, which MA requires).
+    apic.call("music/item_by_uri", { uri: uri }, onTrack, { uri: uri })
+end sub
+
+' As MA's web UI asks: MA answers with the lyrics it has, and for a
+' library track without them it first looks them up (its providers, then
+' lyrics sources such as LRCLIB) and keeps what it finds.
+sub onTrack(resp as object, ctx as object)
+    if ctx.uri <> m.uri then return
+    if not resp.ok or not util.isAA(resp.data)
+        m.loadingIndicator.active = false
+        showMessage("Couldn't load the lyrics.")
+        return
+    end if
+    apic.call("metadata/get_track_lyrics", { track: resp.data }, onLyrics, { uri: ctx.uri })
+end sub
+
+sub onLyrics(resp as object, ctx as object)
+    if ctx.uri <> m.uri then return
+    m.loadingIndicator.active = false
+    if not resp.ok
+        showMessage("Couldn't load the lyrics.")
+        return
+    end if
+    m.data = lyrics.fromReply(resp.data)
+    log.info("lyrics", "loaded", { uri: ctx.uri, synced: m.data.synced, lines: m.data.lines.Count() })
+    if m.data.lines.Count() = 0
+        showMessage("No lyrics available")
+        return
+    end if
+    buildLines()
+    ' What they are, and how to move through them.
+    if m.data.synced
+        setHeaderNote("synchronized (Up/Down to scroll, OK to seek)")
+    else
+        setHeaderNote("no timing info (Up/Down to scroll)")
+    end if
+    m.cursor = 0
+    m.following = m.data.synced
+    if m.data.synced
+        ' Placed at once, even before the first line's time (an intro:
+        ' line -1, which a -1 here would take for "no change", leaving the
+        ' lines unplaced at the window's top).
+        m.current = -2
+        m.follow.control = "start"
+        follow(true)
+    else
+        m.current = -1
+        render()
+        scrollToLine(0, false)
+    end if
+    speech.say(speech.join(["Lyrics", util.str(m.trackText, ""), m.kindNote.text, util.counted(m.data.lines.Count(), "line")]))
+end sub
+
+sub showMessage(text as string)
+    m.follow.control = "stop"
+    m.message.text = text
+    m.message.visible = true
+    speech.say(speech.join(["Lyrics", text]))
+end sub
+
+sub clearLines()
+    m.lines.removeChildrenIndex(m.lines.getChildCount(), 0)
+    m.labels = []
+    m.scrollbar.total = 0
+    m.data = { synced: false, lines: [] }
+    m.follow.control = "stop"
+end sub
+
+' One centered label per line, wrapping, stacked with their measured
+' heights (y and h kept for scrolling).
+sub buildLines()
+    y = 0
+    for each l in m.data.lines
+        lbl = CreateObject("roSGNode", "Label")
+        lbl.font = "font:LargeSystemFont"
+        lbl.width = 1728
+        lbl.wrap = true
+        lbl.maxLines = 3
+        lbl.horizAlign = "center"
+        lbl.color = TEXT_DIM
+        fonts.label(lbl, l.text)
+        h = lbl.boundingRect().height
+        if l.text = "" then h = 30
+        lbl.translation = [96, y]
+        m.lines.appendChild(lbl)
+        m.labels.Push({ node: lbl, y: y, h: h, color: TEXT_DIM })
+        y = y + h + LINE_GAP
+    end for
+    m.scrollbar.total = y - LINE_GAP
+    m.scrollbar.offset = 0
+end sub
+
+' The follow timer (a node observer, so no arguments).
+sub onFollow()
+    follow(false)
+end sub
+
+' placeNow: jump there instead of scrolling (the first placement).
+sub follow(placeNow as boolean)
+    if not m.data.synced then return
+    i = lyrics.lineAt(m.data.lines, playbackSeconds())
+    if i = m.current then return
+    m.current = i
+    if m.following then m.cursor = i
+    render()
+    if m.following then scrollToLine(i, not placeNow)
+end sub
+
+sub render()
+    for i = 0 to m.labels.Count() - 1
+        c = TEXT_DIM
+        if i = m.current then c = TEXT_NOW
+        if not m.following and i = m.cursor then c = TEXT_CURSOR
+        if not m.data.synced and i = m.cursor then c = TEXT_NOW
+        ' (A Label's color reads back as a number, so the color set is
+        ' kept here to compare.)
+        if m.labels[i].color <> c
+            m.labels[i].color = c
+            m.labels[i].node.color = c
+        end if
+    end for
+end sub
+
+' Scrolls so line i sits in the middle (before the first line: its top
+' there).
+sub scrollToLine(i as integer, animate as boolean)
+    if m.labels.Count() = 0 then return
+    target = CENTER_Y
+    if i >= 0 and i < m.labels.Count() then target = CENTER_Y - m.labels[i].y - m.labels[i].h / 2
+    if i < 0 then target = CENTER_Y - m.labels[0].h / 2
+    ' The window's top, in the lines' own coordinates.
+    m.scrollbar.offset = TOP_Y - target
+    from = m.scroller.translation
+    if not animate
+        m.scroller.translation = [0, target]
+        return
+    end if
+    m.scroll.control = "stop"
+    m.scrollTo.keyValue = [[from[0], from[1]], [0, target]]
+    m.scroll.control = "start"
+end sub
+
+sub onResume()
+    if not m.data.synced then return
+    m.following = true
+    m.current = -2
+    onFollow()
+end sub
+
+function onKeyEvent(key as string, press as boolean) as boolean
+    if not press then return false
+    n = m.labels.Count()
+    if n = 0 then return false
+    ' Up from the first line goes on to the nav bar (MainScene).
+    if key = "up" and m.cursor <= 0 then return false
+    if key = "up" or key = "down"
+        if key = "down" and m.cursor < n - 1 then m.cursor = m.cursor + 1
+        if key = "up" and m.cursor > 0 then m.cursor = m.cursor - 1
+        if key = "up" and m.cursor < 0 then m.cursor = 0
+        m.following = false
+        m.resume.control = "stop"
+        if m.data.synced then m.resume.control = "start"
+        render()
+        scrollToLine(m.cursor, true)
+        log.debug("lyrics", "focus line", { index: m.cursor })
+        speech.say(util.str(m.data.lines[m.cursor].text, ""))
+        return true
+    else if key = "OK" and m.data.synced and m.cursor >= 0
+        t = m.data.lines[m.cursor].t
+        log.info("lyrics", "play from line", { index: m.cursor, t: t })
+        m.top.getScene().seekTo = t
+        onResume()
+        return true
+    end if
+    return false
+end function

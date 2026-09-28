@@ -25,8 +25,12 @@
             <Rectangle id="barFill" translation="[672,330]" width="0" height="8" color="#5A8DEE" />
             <Label id="elapsed" translation="[672,350]" width="300" color="#9A9FB0" font="font:SmallSystemFont" />
             <Label id="remaining" translation="[1524,350]" width="300" horizAlign="right" color="#9A9FB0" font="font:SmallSystemFont" />
-            <ButtonRow id="buttons" translation="[672,430]" minWidth="110" spacing="8" />
-            <Label id="upNext" translation="[672,560]" width="1152" color="#9A9FB0" font="font:SmallSystemFont" />
+            <!-- Two rows: playback (Prev, Play/Pause, Next, Shuffle,
+                 Repeat), then the playing track's (Favorite, Lyrics,
+                 More); Up/Down move between them. -->
+            <ButtonRow id="transport" translation="[672,420]" minWidth="110" spacing="8" />
+            <ButtonRow id="actions" translation="[672,500]" minWidth="110" spacing="8" />
+            <Label id="upNext" translation="[672,600]" width="1152" color="#9A9FB0" font="font:SmallSystemFont" />
             <Label id="hint" translation="[96,700]" width="1728" horizAlign="center" color="#5A6270" font="font:SmallestSystemFont" />
         </Group>
         <!-- Screen coordinates: the group undoes the screen's 96 px offset

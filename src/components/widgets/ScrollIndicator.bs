@@ -1,0 +1,20 @@
+import "pkg:/source/lib/ScrollBar.bs"
+
+' The thumb's shortest length, so a long text still shows one.
+const MIN_THUMB = 24
+
+sub init()
+    m.track = m.top.findNode("track")
+    m.thumb = m.top.findNode("thumb")
+    update()
+end sub
+
+sub update()
+    t = scrollbar.thumb(m.top.total, m.top.window, m.top.offset, m.top.height, MIN_THUMB)
+    m.track.visible = t.show
+    m.thumb.visible = t.show
+    if not t.show then return
+    m.track.height = m.top.height
+    m.thumb.height = t.h
+    m.thumb.translation = [0, t.y]
+end sub

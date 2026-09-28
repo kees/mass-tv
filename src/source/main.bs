@@ -132,6 +132,12 @@ sub setupGlobals(g as object, args as dynamic)
         ' MA's stream reaches the player or the request fails.
         playPending: {}
         queueState: {}
+        ' The active profile's music sources, provider instance id -> the
+        ' name MA gives it (MA's providers, for the source on Detail pages).
+        musicSources: {}
+        ' True while a screen should keep the screensaver away even when
+        ' nothing plays (the Lyrics screen; PlayerController applies it).
+        keepAwake: false
     })
     m.logTag = "main"
     log.info("app", "launch", { debug: debugBuild, level: log.levelName(level), device: g.device, args: args })

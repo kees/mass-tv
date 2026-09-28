@@ -28,9 +28,15 @@ sub init()
     render()
 end sub
 
+' The wait for MA's stream starts when MA answers the play request, which
+' can itself take a while (a request that fails clears playPending).
 sub onPlayPending()
-    m.pendingTimer.control = "stop"
-    if isPending() then m.pendingTimer.control = "start"
+    answered = isPending() and util.get(m.global.playPending, "answeredAt") <> invalid
+    if not answered
+        m.pendingTimer.control = "stop"
+    else if m.pendingTimer.control <> "start"
+        m.pendingTimer.control = "start"
+    end if
     render()
 end sub
 

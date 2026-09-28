@@ -210,6 +210,16 @@ def nav_to(entry, select=True):
     return got
 
 
+LETTERS = ["All", "#"] + [chr(c) for c in range(ord("A"), ord("Z") + 1)]
+
+
+def letter_to(start, target):
+    """Left/Right along the letter row from `start` to `target`."""
+    steps = LETTERS.index(target) - LETTERS.index(start) if start in LETTERS else 0
+    for _ in range(abs(steps)):
+        key("Right" if steps > 0 else "Left")
+
+
 def on_screen(st, name):
     return st.get("screen") == name, "screen=%r" % st.get("screen")
 
@@ -253,6 +263,17 @@ def key(k, timeout=2):
     # Nothing logged: the whole timeout was spent waiting.
     stat("key", time.time() - t0)
     stat("key timeout " + k, timeout)
+
+
+def hold(k, seconds):
+    """Holds a remote key (ECP keydown, then keyup after `seconds`)."""
+    gap = LAST_KEY[0] + MIN_KEY_GAP - time.time()
+    if gap > 0:
+        time.sleep(gap)
+    http(ECP_URL + "/keydown/" + k, data=b"", method="POST", timeout=2)
+    time.sleep(seconds)
+    http(ECP_URL + "/keyup/" + k, data=b"", method="POST", timeout=2)
+    LAST_KEY[0] = time.time()
 
 
 def primary_ip():
@@ -299,8 +320,10 @@ def main():
         token = http("http://127.0.0.1:%d/_fake/token?user=testuser" % FAKE_PORT)
         near_expiry = http("http://127.0.0.1:%d/_fake/token?user=testuser&days=30" % FAKE_PORT)
         # The fake reports the Roku player at the simulator's own address.
-        link = "masstv_server=127.0.0.1:%d,masstv_token=%s,masstv_log=DEBUG,masstv_mdns_to=127.0.0.1:%d" % (
-            FAKE_PORT, near_expiry, FAKE_MDNS_PORT)
+        # Library pages of two items, so the fake's short listings take
+        # several pages, placeholders, and the end search.
+        link = ("masstv_server=127.0.0.1:%d,masstv_token=%s,masstv_log=DEBUG,masstv_mdns_to=127.0.0.1:%d,"
+                "masstv_page_size=2") % (FAKE_PORT, near_expiry, FAKE_MDNS_PORT)
         sim = subprocess.Popen([BRS, "--ecp", "-k", link, a.zip], stdout=sim_log, stderr=subprocess.STDOUT,
                                cwd=os.path.dirname(a.zip))
 
@@ -349,6 +372,12 @@ def main():
              method="POST", headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
         st = wait_for(lambda s: s.get("nowplaying", {}).get("title") == "Aerodynamic", timeout=10)
         check("next track via MA", st.get("nowplaying", {}).get("title") == "Aerodynamic", json.dumps(st.get("nowplaying")))
+        # The fake's tracks carry no year; the playing bar's comes from their
+        # album, asked once (the fake's albums are from 2001).
+        def queue_year(s):
+            return (((s.get("queuestate") or {}).get("current_item") or {}).get("media_item") or {}).get("year")
+        st = wait_for(lambda s: queue_year(s) == "2001", timeout=15)
+        check("the playing track's year comes from its album", queue_year(st) == "2001", "year=%r" % queue_year(st))
 
         nav_to("library")
         st = wait_for(lambda s: s.get("screen") == "library", timeout=8)
@@ -369,21 +398,79 @@ def main():
         key("Right")
         key("Select")
         wait_for_log(lambda l: '"m":"page"' in l and '"tab":"albums"' in l, since, timeout=8)
+        # Two-item pages: the end search finds the three albums, a
+        # placeholder stands in for the third, and its page fills it.
+        check("Albums' length comes from the end search, and its second page fills in",
+              wait_for_log(lambda l: '"m":"range"' in l and '"total":3' in l, since, timeout=8)
+              and wait_for_log(lambda l: '"m":"placeholders"' in l and '"extent":3' in l, since, timeout=8)
+              and wait_for_log(lambda l: '"m":"page"' in l and '"tab":"albums"' in l and '"page":1' in l
+                               and '"shown":1' in l, since, timeout=8),
+              "no range of 3, placeholder, and filled second page")
+        # Albums has the letter row under the tabs: Down lands on it, on the
+        # letter below the tab (aimed). The fake sorts like MA (Ágætis
+        # byrjun, async, Discovery).
         since = seq()
         key("Down")
-        check("Down from the Albums tab focuses Discovery",
+        landed = find_log(lambda l: '"c":"letters"' in l and '"m":"focus"' in l, since, timeout=5)
+        letter = (landed or {}).get("d", {}).get("letter", "")
+        check("Down from the Albums tab goes to the letter row", letter in LETTERS, "letter=%r" % letter)
+        check("the screen reader names the letter row",
+              said("Letters, %s, %d of 28" % (letter, LETTERS.index(letter) + 1 if letter in LETTERS else 0), since=since),
+              "no speech of the letter row")
+        letter_to(letter, "B")
+        since = seq()
+        key("Select")
+        check("an empty letter says so",
+              wait_for_log(lambda l: '"m":"empty"' in l and "No albums under B." in l, since, timeout=8),
+              "no 'No albums under B.'")
+        letter_to("B", "D")
+        since = seq()
+        key("Select")
+        check("a letter shows only its albums, found by the start search",
+              wait_for_log(lambda l: '"m":"letter start"' in l and '"letter":"D"' in l, since, timeout=8)
+              and wait_for_log(lambda l: '"m":"page"' in l and '"letter":"D"' in l and '"shown":1' in l, since, timeout=8),
+              "no letter start and one-album page for D")
+        since = seq()
+        key("Down")
+        check("Down from the letter row focuses Discovery",
               wait_for_log(lambda l: '"focus album"' in l and '"Discovery"' in l, since),
               "no album focus on Discovery")
         check("the screen reader says the album, its second line, then its place",
               said('"text":"Discovery, Daft Punk, 2001, button 1 of ', since=since),
               "no speech of Discovery's title, artist and year, and place")
+        # Play/Pause held: Now Playing over the Library; Back returns to the
+        # Library as it was, focus still on Discovery (the next OK opens it).
+        since = seq()
+        hold("Play", 1.0)
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=8)
+        check("holding Play/Pause opens Now Playing over the current screen",
+              st.get("screen") == "nowplaying"
+              and wait_for_log(lambda l: '"m":"Play held: Now Playing"' in l and '"over":"library"' in l, since),
+              "screen=%r" % st.get("screen"))
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "library", timeout=8)
+        check("Back from that Now Playing returns to the Library", *on_screen(st, "library"))
         since = seq()
         key("Select")
         st = wait_for(lambda s: s.get("screen") == "detail", timeout=8)
-        check("OK on an album opens its Detail page", *on_screen(st, "detail"))
+        check("OK on an album opens its Detail page (focus kept through Now Playing)", *on_screen(st, "detail"))
+        check("an album's info ends with its source",
+              wait_for_log(lambda l: '"c":"detail"' in l and '"m":"info"' in l and "tracks" in l and "Example Music" in l, since, timeout=8),
+              "no info line with its track count and Example Music")
         check("the screen reader names the album before its first button",
               said("Discovery, album", "Play, button 1 of 5", since=since),
               "no speech of the album and Play")
+        # Back from the track list goes up to the buttons (the one last
+        # used), not off the page.
+        since = seq()
+        key("Down")
+        wait_for_log(lambda l: '"m":"focus track"' in l, since)
+        since = seq()
+        key("Back")
+        st = state()
+        check("Back from an album's tracks goes to its buttons",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"Play"' in l, since) and st.get("screen") == "detail",
+              "screen=%r, no button focus on Play" % st.get("screen"))
         since = seq()
         for _ in range(4):
             key("Right")
@@ -416,9 +503,32 @@ def main():
               "no 'menu closed' and More focus after Back")
         key("Back")
         wait_for(lambda s: s.get("screen") == "library", timeout=8)
+        # Back goes up one level at a time: the grid, the letter row (on
+        # the shown letter), the tab row (on the shown tab), the nav bar
+        # (on Library), then Home's entry.
+        since = seq()
+        key("Back")
+        check("Back from the grid goes to the shown letter",
+              wait_for_log(lambda l: '"c":"letters"' in l and '"m":"focus"' in l and '"letter":"D"' in l, since),
+              "no letter row focus on D")
+        since = seq()
+        key("Back")
+        check("Back from the letter row goes to the shown tab",
+              wait_for_log(lambda l: '"m":"focus tab albums"' in l, since),
+              "no tab row focus on Albums")
+        since = seq()
+        key("Back")
+        check("Back from the tab row goes to the nav bar's Library",
+              wait_for_log(lambda l: '"c":"nav"' in l and '"m":"focus"' in l and '"entry":"library"' in l, since),
+              "no nav focus on library")
+        since = seq()
         key("Back")
         st = wait_for(lambda s: s.get("screen") == "home", timeout=8)
-        check("Back returns home", st.get("screen") == "home", "screen=%r" % st.get("screen"))
+        check("Back from the nav bar returns home, still on the nav bar",
+              st.get("screen") == "home"
+              and wait_for_log(lambda l: '"c":"nav"' in l and '"m":"focus"' in l and '"entry":"home"' in l, since),
+              "screen=%r, no nav focus on home" % st.get("screen"))
+        key("Down")  # into Home's rows, where nav_to starts
 
         # Now Playing via the nav bar.
         since = seq()
@@ -441,12 +551,44 @@ def main():
         check("instant replay seeks back", fs2["queue"]["elapsed_time"] < before,
               "%r -> %r" % (before, fs2["queue"]["elapsed_time"]))
 
+        # Now Playing's buttons are two rows: playback (with Shuffle and
+        # Repeat), then Favorite, Lyrics, and More. Down goes to the second
+        # row; Lyrics sits before More, its last button. The lyrics show on their own screen; the fake's
+        # Aerodynamic has invented synced ones.
+        since = seq()
+        key("Down")
+        check("Down from Now Playing's transport row reaches its second row",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"m":"focus"' in l
+                           and any('"label":"%s"' % b in l for b in ("Favorite", "Lyrics", "More")), since),
+              "no focus on the second row")
+        for _ in range(4):
+            key("Right")
+        since = seq()
+        key("Left")
+        check("Now Playing has a Lyrics button before More",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"Lyrics"' in l, since),
+              "no button focus on Lyrics")
+        since = seq()
+        key("Select")
+        st = wait_for(lambda s: s.get("screen") == "lyrics", timeout=8)
+        check("Lyrics opens the lyrics screen", *on_screen(st, "lyrics"))
+        check("the playing track's synced lyrics load",
+              wait_for_log(lambda l: '"c":"lyrics"' in l and '"m":"loaded"' in l and '"synced":true' in l, since, timeout=8),
+              "no synced lyrics loaded")
+        since = seq()
+        key("Down")
+        check("Down moves through the lyrics",
+              wait_for_log(lambda l: '"c":"lyrics"' in l and '"m":"focus line"' in l, since),
+              "no line focus")
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=8)
+        check("Back from the lyrics returns to Now Playing", *on_screen(st, "nowplaying"))
+
         # Now Playing's More (its last button): the playing track's options,
         # ending with View album, which opens the album's Detail page; Back
         # returns to Now Playing.
         since = seq()
-        for _ in range(5):
-            key("Right")
+        key("Right")
         check("Now Playing's last button is More",
               wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"More"' in l, since),
               "no button focus on More")
@@ -463,13 +605,18 @@ def main():
         st = wait_for(lambda s: s.get("screen") == "nowplaying", timeout=8)
         check("Back from that album returns to Now Playing", *on_screen(st, "nowplaying"))
 
+        # Up from the second row goes to the transport row first.
+        since = seq()
+        key("Up")
+        check("Up from Now Playing's second row returns to its transport row",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"m":"focus"' in l
+                           and any('"label":"%s"' % b in l for b in ("Prev", "Play", "Pause", "Next", "Shuffle", "Repeat")), since),
+              "no focus on the transport row")
         # Queue (the nav bar entry after Now Playing): OK on a row opens its
         # options in Mass TV's own menu (not a Roku dialog); Back closes it
-        # and the list has focus again. Up from More (Now Playing's last
-        # button, at the right) aims at the entry above it: the profile.
+        # and the list has focus again.
         aimed = nav_to("queue")
-        check("Up from Now Playing's More aims at the profile entry above it", aimed == "settings",
-              "aimed at %r" % aimed)
+        check("Up from Now Playing's transport row reaches the nav bar", aimed in NAV, "aimed at %r" % aimed)
         st = wait_for(lambda s: s.get("screen") == "queue", timeout=8)
         check("the nav bar's Queue opens the queue", *on_screen(st, "queue"))
         wait_for_log(lambda l: '"c":"queue"' in l and '"m":"focus track"' in l, 0, timeout=8)
@@ -484,6 +631,24 @@ def main():
               wait_for_log(lambda l: '"m":"menu closed"' in l, since)
               and wait_for_log(lambda l: '"c":"queue"' in l and '"m":"focus track"' in l, since),
               "no 'menu closed' and queue focus after Back")
+        # The row's menu ends with View artist and View album, like an
+        # item's More; View album opens the row's album above the queue.
+        since = seq()
+        key("Select")
+        wait_for_log(lambda l: '"c":"menu"' in l and '"label":"Play now"' in l, since)
+        since = seq()
+        key("Up")  # the menu wraps to its last item
+        check("a queue row's menu ends with View album",
+              wait_for_log(lambda l: '"c":"menu"' in l and '"label":"View album"' in l, since),
+              "no menu focus on View album")
+        key("Select")
+        st = wait_for(lambda s: s.get("screen") == "detail", timeout=8)
+        check("View album opens the queue row's album", *on_screen(st, "detail"))
+        since = seq()
+        key("Back")
+        st = wait_for(lambda s: s.get("screen") == "queue", timeout=8)
+        check("Back from that album returns to the queue", *on_screen(st, "queue"))
+        wait_for_log(lambda l: '"c":"queue"' in l and '"m":"focus track"' in l, since, timeout=8)
         # Queue is a root screen (Back would ask to exit): back to Now
         # Playing through the nav bar. Up from a full-width queue row aims
         # at the current screen's entry.
@@ -509,9 +674,11 @@ def main():
               "no nav focus on settings")
         since = seq()
         key("Down")
-        check("Down from the profile entry lands on More below it",
-              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"More"' in l, since),
-              "no button focus on More")
+        # Aimed: the button nearest below the entry, in the first row
+        # (Repeat, its rightmost).
+        check("Down from the profile entry lands on the button below it",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"Repeat' in l, since),
+              "no button focus on Repeat")
 
         def ma_play():
             http("http://127.0.0.1:%d/_fake/play?uri=%s" % (FAKE_PORT, urllib.parse.quote("example_music--fake01://album/al1")),
@@ -560,16 +727,32 @@ def main():
         ma_stop()
         st = wait_for(lambda s: s.get("screen") == "profiles", timeout=8)
         check("stop returns to the picker", *on(st, "profiles"))
-        # The picker's rows wrap: Up from the profile to "+ Link a profile",
-        # Down back to the profile (which the next step picks).
+        # The picker wraps through its button: Up from the profile to "Link
+        # a new profile" (a button under the list), Down back to the
+        # profile; Right from the list goes to the button too, and Left
+        # from the button back to the list.
         since = seq()
         key("Up")
-        check("Up from the picker's first row wraps to its last",
-              wait_for_log(lambda l: '"c":"profiles"' in l and "+ Link a profile" in l, since),
-              "no picker focus on + Link a profile")
+        check("Up from the picker's first row wraps to its Link button",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"Link a new profile"' in l, since),
+              "no focus on the Link a new profile button")
         since = seq()
         key("Down")
-        check("Down from the picker's last row wraps to its first",
+        key("Right")
+        check("Right from the picker's list goes to its Link button",
+              wait_for_log(lambda l: '"c":"buttons"' in l and '"label":"Link a new profile"' in l, since),
+              "no focus on the Link a new profile button after Right")
+        since = seq()
+        key("Left")
+        # The list keeps its row, so nothing logs a focus change; the
+        # screen reader says the row again as the list gets the focus.
+        check("Left from the Link button returns to the picker's list",
+              said("Test User, button 1 of 1", since=since),
+              "no speech of the picker's row after Left")
+        key("Right")
+        since = seq()
+        key("Down")
+        check("Down from the Link button wraps to the picker's first row",
               wait_for_log(lambda l: '"c":"profiles"' in l and '"index":0' in l, since),
               "no picker focus on row 0")
 

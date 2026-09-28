@@ -1,0 +1,41 @@
+sub bidiTests()
+    tst.begin("bidi")
+    ' Reference outputs from python-bidi and arabic-reshaper (lam-alef
+    ' ligatures only, marks deleted).
+    tst.eq(cpsOf(bidi.visual(Chr(&h0645) + Chr(&h0631) + Chr(&h062D) + Chr(&h0628) + Chr(&h0627) + Chr(&h0020) + Chr(&h0639) + Chr(&h0627) + Chr(&h0644) + Chr(&h0645))), [&hFEE2, &hFEDF, &hFE8E, &hFECB, &h0020, &hFE8E, &hFE92, &hFEA3, &hFEAE, &hFEE3], "two words")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0054) + Chr(&h0072) + Chr(&h0061) + Chr(&h0063) + Chr(&h006B) + Chr(&h0020) + Chr(&h004F) + Chr(&h006E) + Chr(&h0065) + Chr(&h0020) + Chr(&h002D) + Chr(&h0020) + Chr(&h0645) + Chr(&h0631) + Chr(&h062D) + Chr(&h0628) + Chr(&h0627) + Chr(&h0020) + Chr(&h0639) + Chr(&h0627) + Chr(&h0644) + Chr(&h0645))), [&h0054, &h0072, &h0061, &h0063, &h006B, &h0020, &h004F, &h006E, &h0065, &h0020, &h002D, &h0020, &hFEE2, &hFEDF, &hFE8E, &hFECB, &h0020, &hFE8E, &hFE92, &hFEA3, &hFEAE, &hFEE3], "mixed LTR line")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0645) + Chr(&h0631) + Chr(&h062D) + Chr(&h0628) + Chr(&h0627) + Chr(&h0020) + Chr(&h0639) + Chr(&h0627) + Chr(&h0644) + Chr(&h0645) + Chr(&h0020) + Chr(&h0066) + Chr(&h0065) + Chr(&h0061) + Chr(&h0074) + Chr(&h002E) + Chr(&h0020) + Chr(&h0053) + Chr(&h006F) + Chr(&h006D) + Chr(&h0065) + Chr(&h006F) + Chr(&h006E) + Chr(&h0065))), [&h0066, &h0065, &h0061, &h0074, &h002E, &h0020, &h0053, &h006F, &h006D, &h0065, &h006F, &h006E, &h0065, &h0020, &hFEE2, &hFEDF, &hFE8E, &hFECB, &h0020, &hFE8E, &hFE92, &hFEA3, &hFEAE, &hFEE3], "RTL line with Latin")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0623) + Chr(&h0644) + Chr(&h0628) + Chr(&h0648) + Chr(&h0645) + Chr(&h0020) + Chr(&h0032) + Chr(&h0030) + Chr(&h0030) + Chr(&h0035))), [&h0032, &h0030, &h0030, &h0035, &h0020, &hFEE1, &hFEEE, &hFE92, &hFEDF, &hFE83], "European digits")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0623) + Chr(&h063A) + Chr(&h0646) + Chr(&h064A) + Chr(&h0629) + Chr(&h0020) + Chr(&h0661) + Chr(&h0662))), [&h0661, &h0662, &h0020, &hFE94, &hFEF4, &hFEE8, &hFECF, &hFE83], "Arabic-Indic digits")
+    tst.eq(cpsOf(bidi.visual(Chr(&h062D) + Chr(&h0628) + Chr(&h064A) + Chr(&h0628) + Chr(&h064A) + Chr(&h0020) + Chr(&h0028) + Chr(&h0631) + Chr(&h064A) + Chr(&h0645) + Chr(&h0643) + Chr(&h0633) + Chr(&h0029))), [&h0028, &hFEB2, &hFEDC, &hFEE4, &hFEF3, &hFEAD, &h0029, &h0020, &hFEF2, &hFE92, &hFEF4, &hFE92, &hFEA3], "brackets")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0633) + Chr(&h0644) + Chr(&h0627) + Chr(&h0645))), [&hFEE1, &hFEFC, &hFEB3], "lam-alef")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0644) + Chr(&h0627))), [&hFEFB], "lam-alef isolated")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0645) + Chr(&h064F) + Chr(&h062D) + Chr(&h064E) + Chr(&h0645) + Chr(&h0651) + Chr(&h064E) + Chr(&h062F))), [&hFEAA, &hFEE4, &hFEA4, &hFEE3], "marks dropped")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0645) + Chr(&h06CC) + Chr(&h200C) + Chr(&h062E) + Chr(&h0648) + Chr(&h0627) + Chr(&h0647) + Chr(&h0645))), [&hFEE2, &hFEEB, &hFE8D, &hFEEE, &hFEA7, &hFBFD, &hFEE3], "Persian with ZWNJ")
+    tst.eq(cpsOf(bidi.visual(Chr(&h067E) + Chr(&h0627) + Chr(&h06A9) + Chr(&h0633) + Chr(&h062A) + Chr(&h0627) + Chr(&h0646))), [&hFEE5, &hFE8E, &hFE98, &hFEB4, &hFB90, &hFE8E, &hFB58], "Urdu letters")
+    tst.eq(cpsOf(bidi.visual(Chr(&h05E9) + Chr(&h05DC) + Chr(&h05D5) + Chr(&h05DD) + Chr(&h0020) + Chr(&h05E2) + Chr(&h05D5) + Chr(&h05DC) + Chr(&h05DD))), [&h05DD, &h05DC, &h05D5, &h05E2, &h0020, &h05DD, &h05D5, &h05DC, &h05E9], "Hebrew")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0643) + Chr(&h0640) + Chr(&h0640) + Chr(&h0627) + Chr(&h0646))), [&hFEE5, &hFE8E, &h0640, &h0640, &hFEDB], "tatweel")
+    tst.eq(cpsOf(bidi.visual(Chr(&h0054) + Chr(&h0072) + Chr(&h0061) + Chr(&h0063) + Chr(&h006B) + Chr(&h0020) + Chr(&h004F) + Chr(&h006E) + Chr(&h0065) + Chr(&h0020) + Chr(&h002D) + Chr(&h0020) + Chr(&h05E9) + Chr(&h05DC) + Chr(&h05D5) + Chr(&h05DD) + Chr(&h0020) + Chr(&h05E2) + Chr(&h05D5) + Chr(&h05DC) + Chr(&h05DD))), [&h0054, &h0072, &h0061, &h0063, &h006B, &h0020, &h004F, &h006E, &h0065, &h0020, &h002D, &h0020, &h05DD, &h05DC, &h05D5, &h05E2, &h0020, &h05DD, &h05D5, &h05DC, &h05E9], "Hebrew in a Latin line")
+    tst.eq(cpsOf(bidi.visual(Chr(&h05E9) + Chr(&h05DC) + Chr(&h05D5) + Chr(&h05DD) + Chr(&h0020) + Chr(&h05E2) + Chr(&h05D5) + Chr(&h05DC) + Chr(&h05DD) + Chr(&h0020) + Chr(&h0066) + Chr(&h0065) + Chr(&h0061) + Chr(&h0074) + Chr(&h002E) + Chr(&h0020) + Chr(&h0053) + Chr(&h006F) + Chr(&h006D) + Chr(&h0065) + Chr(&h006F) + Chr(&h006E) + Chr(&h0065))), [&h0066, &h0065, &h0061, &h0074, &h002E, &h0020, &h0053, &h006F, &h006D, &h0065, &h006F, &h006E, &h0065, &h0020, &h05DD, &h05DC, &h05D5, &h05E2, &h0020, &h05DD, &h05D5, &h05DC, &h05E9], "Latin in a Hebrew line")
+    tst.eq(cpsOf(bidi.visual(Chr(&h05E9) + Chr(&h05D9) + Chr(&h05E8) + Chr(&h0020) + Chr(&h0032) + Chr(&h0030) + Chr(&h0030) + Chr(&h0035))), [&h0032, &h0030, &h0030, &h0035, &h0020, &h05E8, &h05D9, &h05E9], "Hebrew with digits")
+    tst.eq(cpsOf(bidi.visual(Chr(&h05D0) + Chr(&h05D4) + Chr(&h05D1) + Chr(&h05D4) + Chr(&h0020) + Chr(&h0028) + Chr(&h05E8) + Chr(&h05DE) + Chr(&h05D9) + Chr(&h05E7) + Chr(&h05E1) + Chr(&h0029))), [&h0028, &h05E1, &h05E7, &h05D9, &h05DE, &h05E8, &h0029, &h0020, &h05D4, &h05D1, &h05D4, &h05D0], "Hebrew brackets")
+    tst.eq(cpsOf(bidi.visual(Chr(&h05E6) + Chr(&h0027) + Chr(&h05D9) + Chr(&h05E4) + Chr(&h05E1) + Chr(&h0020) + Chr(&h05EA) + Chr(&h05DC) + Chr(&h05BE) + Chr(&h05D0) + Chr(&h05D1) + Chr(&h05D9) + Chr(&h05D1))), [&h05D1, &h05D9, &h05D1, &h05D0, &h05BE, &h05DC, &h05EA, &h0020, &h05E1, &h05E4, &h05D9, &h0027, &h05E6], "Hebrew geresh and maqaf")
+    ' Points dropped (python-bidi's order for the text without them).
+    tst.eq(cpsOf(bidi.visual(Chr(&h05E9) + Chr(&h05B8) + Chr(&h05C1) + Chr(&h05DC) + Chr(&h05D5) + Chr(&h05B9) + Chr(&h05DD))), [&h05DD, &h05D5, &h05DC, &h05E9], "Hebrew points dropped")
+    ' Text without right-to-left characters is left alone.
+    tst.eq(bidi.visual("Björk – Jóga (Live)"), "Björk – Jóga (Live)", "no right-to-left text")
+    tst.eq(bidi.visual(""), "", "empty")
+    tst.ok(bidi.hasRtl(Chr(&h0639)), "Arabic is right-to-left")
+    tst.ok(not bidi.hasRtl("坂本龍一"), "CJK isn't")
+end sub
+
+' Code points, without the zero-width joiner and non-joiner (kept for
+' shaping, removed by fonts.fold).
+function cpsOf(s as string) as object
+    out = []
+    for i = 1 to Len(s)
+        c = Asc(Mid(s, i, 1))
+        if c <> &h200C and c <> &h200D then out.Push(c)
+    end for
+    return out
+end function

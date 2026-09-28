@@ -8,6 +8,7 @@ const FADE_SHARE = 1.0
 sub init()
     m.topFade = m.top.findNode("top")
     m.bottomFade = m.top.findNode("bottom")
+    m.scrollbar = m.top.findNode("scrollbar")
     m.content = invalid
     m.first = 0
     m.numRows = 0
@@ -32,9 +33,20 @@ sub onList()
     ' where no fade covers it: it flashed at full strength before sliding
     ' under the fade.
     list.clippingRect = [0, 0, list.itemSize[0], (m.numRows - 1) * rowStep + rowH]
+    m.scrollbar.list = list
+    ' Screens move lists (Library's under its letter row).
+    list.ObserveField("translation", "onListMoved")
     list.ObserveField("currFocusRow", "onFocused")
     list.ObserveField("content", "onContent")
     onContent()
+end sub
+
+sub onListMoved()
+    m.top.translation = m.top.list.translation
+end sub
+
+sub onTotal()
+    m.scrollbar.total = m.top.total
 end sub
 
 ' Lists here fill their content node after assigning it (Library appends

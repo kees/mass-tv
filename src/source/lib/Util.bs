@@ -74,6 +74,16 @@ namespace util
         return Len(s) >= Len(suffix) and Right(s, Len(suffix)) = suffix
     end function
 
+    ' A count and its noun, singular or plural to match: "0 tracks",
+    ' "1 track", "2 tracks". plural defaults to the noun plus "s".
+    function counted(n as dynamic, noun as string, plural = "" as string) as string
+        count = 0
+        if util.isNumber(n) then count = Int(n)
+        if count = 1 then return "1 " + noun
+        if plural = "" then plural = noun + "s"
+        return count.ToStr() + " " + plural
+    end function
+
     ' Seconds -> "m:ss" or "h:mm:ss". Negative or invalid -> "0:00".
     function formatDuration(seconds as dynamic) as string
         if not util.isNumber(seconds) then return "0:00"

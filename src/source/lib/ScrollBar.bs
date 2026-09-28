@@ -1,0 +1,19 @@
+' Where a scroll indicator's thumb goes (widgets/ScrollIndicator): the
+' content's total length, how much of it shows, and how far it has
+' scrolled, in any one unit (pixels, rows).
+namespace scrollbar
+
+    ' { show, y, h }: the thumb's top and height along a track trackH long,
+    ' at least minH tall; show is false when everything fits.
+    function thumb(total as float, visible as float, offset as float, trackH as float, minH as float) as object
+        if total <= 0 or visible >= total or trackH <= 0 then return { show: false, y: 0, h: trackH }
+        h = trackH * visible / total
+        if h < minH then h = minH
+        if h > trackH then h = trackH
+        room = total - visible
+        if offset < 0 then offset = 0
+        if offset > room then offset = room
+        y = (trackH - h) * offset / room
+        return { show: true, y: y, h: h }
+    end function
+end namespace

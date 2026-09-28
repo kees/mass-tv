@@ -8,7 +8,7 @@ const REDISCOVER_SECONDS = 10
 sub init()
     m.logTag = "setup"
     m.servers = m.top.findNode("servers")
-    m.top.findNode("serversFade").list = m.servers
+    m.top.findNode("serversScroll").list = m.servers
     m.discovery = m.top.findNode("discovery")
     m.address = m.top.findNode("address")
     m.actions = m.top.findNode("actions")

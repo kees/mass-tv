@@ -1,0 +1,31 @@
+sub pagingTests()
+    tst.begin("paging")
+    s = paging.newState(0, 60)
+    tst.eq(paging.nextPage(s, 0, 12, 30, 0), 0, "nothing read: the first page")
+    paging.markLoaded(s, 0)
+    tst.eq(paging.nextPage(s, 0, 12, 30, 60), -1, "length unknown, focus far from the end: nothing")
+    tst.eq(paging.nextPage(s, 40, 12, 30, 60), 1, "length unknown, near the end: the next page")
+    tst.eq(paging.extentFor(s, 40, 360, 60), 60, "no placeholders while the length is unknown")
+
+    s.total = 1000
+    tst.eq(paging.extentFor(s, 0, 360, 60), 361, "placeholders up to the runway past the focus")
+    tst.eq(paging.extentFor(s, 800, 360, 361), 1000, "never past the length")
+    tst.eq(paging.extentFor(s, 10, 360, 500), 500, "never fewer than there are")
+    ' A held Down went far past what was read: the focus's own page first,
+    ' not the ones it skipped.
+    tst.eq(paging.nextPage(s, 400, 12, 30, 761), 6, "the page under the focus first")
+    paging.markLoaded(s, 6)
+    tst.eq(paging.nextPage(s, 400, 12, 30, 761), 7, "then the next one ahead")
+    paging.markLoaded(s, 7)
+    tst.eq(paging.nextPage(s, 400, 12, 30, 761), -1, "the skipped pages wait until the focus comes back")
+    tst.eq(paging.nextPage(s, 362, 12, 30, 761), 5, "an item above the focus row's page")
+    tst.eq(paging.nextPage(s, 995, 12, 30, 1000), 16, "at the end, only pages that exist")
+
+    ' A letter subset read from offset 100, its first item at 103.
+    s = paging.newState(100, 60)
+    s.start = 103
+    tst.eq(paging.firstIndex(s, 0), -3, "the first page starts before the content")
+    tst.eq(paging.firstIndex(s, 1), 57, "the second page's first item")
+    tst.eq(paging.pageOf(s, 56), 0, "index 56 is on the first page")
+    tst.eq(paging.pageOf(s, 57), 1, "index 57 on the second")
+end sub

@@ -2,15 +2,77 @@ import "pkg:/source/lib/Store.bs"
 import "pkg:/source/lib/Profiles.bs"
 import "pkg:/source/lib/Jwt.bs"
 
+' Screen y (the screen itself sits 96 px down, below where the nav bar
+' would be) of the title's center, the list's center, and the button's
+' center: a quarter of the way down, the middle, and three quarters.
+const SCREEN_Y = 96
+const TITLE_CENTER = 270
+const LIST_CENTER = 540
+const BUTTON_CENTER = 810
+' Room kept between the list and the title or the button.
+const LIST_MARGIN = 40
+' The list's rows (MenuRow, 64 tall, 8 apart).
+const ROW_STEP = 72
+const ROW_GAP = 8
+
 sub init()
     m.logTag = "profiles"
     m.list = m.top.findNode("list")
-    m.hint = m.top.findNode("hint")
+    m.title = m.top.findNode("title")
+    m.linkButton = m.top.findNode("linkButton")
+    m.linkButton.buttons = ["Link a new profile"]
+    m.linkButton.ObserveField("selected", "onLink")
+    placeFixed()
+    m.top.findNode("listScroll").list = m.list
     m.list.ObserveField("itemSelected", "onSelected")
     m.list.ObserveField("itemFocused", "onFocused")
     speakLists([m.list])
     m.focusTarget = m.list
     m.top.ObserveField("params", "onParams")
+end sub
+
+' The title and the button stay put, whatever the number of profiles; the
+' list gets as many rows as fit between them (around the middle, with
+' LIST_MARGIN to each), then scrolls.
+sub placeFixed()
+    titleH = m.title.boundingRect().height
+    m.title.translation = [0, TITLE_CENTER - SCREEN_Y - Int(titleH / 2)]
+    b = m.linkButton.boundingRect()
+    buttonTop = BUTTON_CENTER - Int(b.height / 2)
+    m.linkButton.translation = [Int((1920 - b.width) / 2), buttonTop - SCREEN_Y]
+    above = LIST_CENTER - (TITLE_CENTER + Int(titleH / 2) + LIST_MARGIN)
+    below = (buttonTop - LIST_MARGIN) - LIST_CENTER
+    half = above
+    if below < half then half = below
+    rows = Int((2 * half + ROW_GAP) / ROW_STEP)
+    if rows < 1 then rows = 1
+    m.list.numRows = rows
+end sub
+
+' Centers the list's shown rows on the middle of the screen.
+sub layout()
+    rows = m.profiles.Count()
+    if rows > m.list.numRows then rows = m.list.numRows
+    listH = rows * ROW_STEP - ROW_GAP
+    m.list.translation = [m.list.translation[0], LIST_CENTER - SCREEN_Y - Int(listH / 2)]
+end sub
+
+' The list, on row index; -1 keeps the row it had (the list keeps its
+' focused row while the button has the focus).
+sub focusList(index as integer)
+    if index >= 0 then m.list.jumpToItem = index
+    m.focusTarget = m.list
+    m.list.setFocus(true)
+end sub
+
+sub focusButton()
+    m.focusTarget = m.linkButton
+    m.linkButton.setFocus(true)
+end sub
+
+sub onLink()
+    log.debug("profiles", "link a profile")
+    m.top.navigate = { screen: "setup", params: {}, root: true }
 end sub
 
 sub onParams()
@@ -31,25 +93,34 @@ sub onParams()
         end if
         n.title = label
     end for
-    add = root.CreateChild("ContentNode")
-    add.title = "+ Link a profile"
     m.list.content = root
+    m.list.visible = m.profiles.Count() > 0
+    layout()
     idx = profiles.initialIndex(m.profiles, store.lastProfile())
-    if idx >= 0 then m.list.jumpToItem = idx
-    m.hint.text = ""
-    if m.profiles.Count() > 0 and not many then m.hint.text = "Server: " + profiles.serverLabel(m.profiles[0])
+    if idx >= 0 then focusList(idx) else focusButton()
 end sub
 
-' Up and Down wrap: the list passes Down on at its last row and Up at its
-' first.
+' Down from the list's last row goes to the button, Up from its first to
+' the button too (the list passes both on), and so do Left and Right from
+' any row; from the button Down wraps to the first row, Up to the last,
+' and Left and Right return to the row that had the focus.
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press or m.list.content = invalid then return false
-    if m.list.hasFocus() and key = "down"
-        m.list.jumpToItem = 0
+    count = m.list.content.getChildCount()
+    if m.list.hasFocus() and (key = "down" or key = "up" or key = "left" or key = "right")
+        focusButton()
         return true
-    else if m.list.hasFocus() and key = "up"
-        m.list.jumpToItem = m.list.content.getChildCount() - 1
-        return true
+    else if m.linkButton.isInFocusChain() and count > 0
+        if key = "down"
+            focusList(0)
+            return true
+        else if key = "up"
+            focusList(count - 1)
+            return true
+        else if key = "left" or key = "right"
+            focusList(-1)
+            return true
+        end if
     end if
     return false
 end function
@@ -62,10 +133,7 @@ end sub
 
 sub onSelected()
     idx = m.list.itemSelected
-    if idx >= m.profiles.Count()
-        m.top.navigate = { screen: "setup", params: {}, root: true }
-        return
-    end if
+    if idx >= m.profiles.Count() then return
     p = m.profiles[idx]
     days = jwt.daysLeft(p.token, CreateObject("roDateTime").AsSeconds())
     if days <> invalid and days < 0
