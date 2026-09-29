@@ -70,6 +70,13 @@ sub deepLinkTests()
     r = deeplink.parse({ contentId: url, t: "a" }, hosts)
     tst.eq(r.action, "play", "contentId accepted")
 
+    ' Streaming Store deep links (Roku's test tools send these): no catalog,
+    ' so they're rejected and the app opens as usual.
+    r = deeplink.parse({ contentId: "12345", mediaType: "movie" }, hosts)
+    tst.eq([r.action, Left(r.reason, 15)], ["reject", "store deep link"], "store deep link rejected")
+    tst.eq(deeplink.parse({ contentId: url, mediaType: "episode" }, []).action, "reject", "store deep link with a URL rejected, even with any host allowed")
+    tst.eq(deeplink.parse({ contentId: "12345" }, []).action, "reject", "a contentId that isn't a URL rejected")
+
     ' Debug params.
     r = deeplink.parse({ masstv_log: "DEBUG", masstv_collector: "192.168.1.5:8765", mtv_reset: "1" }, hosts)
     tst.eq(r.action, "debug", "debug-only link")

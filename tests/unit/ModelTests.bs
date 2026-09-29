@@ -73,7 +73,6 @@ sub maApiTests()
     tst.ok(not ma.hasDateAdded(invalid), "invalid list")
     tst.eq(ma.radioUri(track), "", "radio needs uri")
     tst.eq(ma.radioUri(album), "radio_playlist://playlist/example_music--AbC://album/302127", "radio uri")
-    tst.eq(ma.flowUri("example_music--AbC"), "example_music--AbC://playlist/flow", "flow uri")
     tst.eq(ma.browseArgs("example_music--AbC://", "ROKU_1", 77), { path: "example_music--AbC://", player_id: "ROKU_1" }, "browse args")
     tst.eq(ma.browseArgs(invalid, "ROKU_1", 50), {}, "browse root old schema")
 

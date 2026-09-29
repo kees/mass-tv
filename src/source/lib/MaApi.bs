@@ -520,11 +520,6 @@ namespace ma
         return "radio_playlist://playlist/" + uri
     end function
 
-    ' A provider's Flow playlist URI for a provider instance id like "example_music--AbCdEf".
-    function flowUri(instanceId as string) as string
-        return instanceId + "://playlist/flow"
-    end function
-
     function browseArgs(path as dynamic, playerId as string, schema as integer) as object
         args = {}
         if util.isNonEmptyString(path) then args.path = path

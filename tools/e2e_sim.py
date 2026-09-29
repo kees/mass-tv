@@ -347,6 +347,17 @@ def main():
               wait_for_log(lambda l: '"m":"global toggle"' in l, since)
               and not wait_for_log(lambda l: '"m":"play_media"' in l, since, timeout=1.5),
               "no global toggle, or a play_media of the card")
+        # A Streaming Store deep link (contentId and mediaType, as Roku's test
+        # tools send them) finds no catalog: it's rejected, nothing plays, and
+        # Home stays.
+        since = seq()
+        ecp_input("contentId=http%3A%2F%2F192.0.2.10%2Fvideo.mp4&mediaType=movie")
+        rejected = wait_for_log(lambda l: '"m":"deep link rejected"' in l and "store deep link" in l, since)
+        st = state()
+        check("a Streaming Store deep link is rejected, and Home stays",
+              rejected and st.get("screen") == "home"
+              and st.get("nowplaying", {}).get("status") in (None, "idle", "stopped"),
+              "rejected=%r screen=%r nowplaying=%r" % (rejected, st.get("screen"), st.get("nowplaying")))
 
         # A Detail page of an item in Home's "Recently played" offers to
         # remove it (More); Home's row reloads without it.
@@ -494,10 +505,14 @@ def main():
               st.get("screen") == "nowplaying"
               and wait_for_log(lambda l: '"m":"Play held: Now Playing"' in l and '"over":"library"' in l, since),
               "screen=%r" % st.get("screen"))
+        # The fake reports FLAC 16/44.1 with the generated test media, else
+        # its built-in tone (WAV, 16-bit, 22.05 kHz, shown to one decimal).
+        quality = ("FLAC", "16-bit", "44.1 kHz") if os.path.isdir(os.path.join(ROOT, "test-media")) else ("WAV", "16-bit", "22 kHz")
         check("Now Playing shows the stream's quality from MA's stream details",
-              wait_for_log(lambda l: '"c":"nowplaying"' in l and '"m":"quality"' in l and "FLAC \\u00B7 16-bit \\u00B7 44.1 kHz" in l, since)
-              or wait_for_log(lambda l: '"c":"nowplaying"' in l and '"m":"quality"' in l and "FLAC · 16-bit · 44.1 kHz" in l, since, timeout=1),
-              "no quality line FLAC · 16-bit · 44.1 kHz")
+              wait_for_log(lambda l: '"c":"nowplaying"' in l and '"m":"quality"' in l
+                           and ("\\u00B7".join(" %s " % q for q in quality).strip() in l
+                                or " · ".join(quality) in l), since),
+              "no quality line %s" % " · ".join(quality))
         key("Back")
         st = wait_for(lambda s: s.get("screen") == "library", timeout=8)
         check("Back from that Now Playing returns to the Library", *on_screen(st, "library"))

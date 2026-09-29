@@ -101,6 +101,29 @@ Debug builds serve their log at `http://<roku>:8889/`. `tools/roku.py`
 has more (keys, deep links, packaging); run it without arguments for
 help.
 
+## Trying Mass TV without Music Assistant
+
+`tools/fake_ma.py` is a small stand-in for a Music Assistant server (one
+Python 3 file, standard library only). With `--demo` it serves an
+invented library of three albums, and it plays them on the Roku the way
+Music Assistant's Roku player provider does.
+
+1. Install Mass TV on the Roku.
+2. On the Roku, allow control from the network: Settings > System >
+   Advanced system settings > Control by mobile apps > Network access:
+   **Enabled**. Note the Roku's address (Settings > Network > About).
+3. On a computer on the same network, run:
+
+       python3 tools/fake_ma.py --roku <Roku's address> --demo
+
+   It prints the address to link to and a user name and password. The
+   computer must accept connections on port 8095.
+4. In Mass TV, link to that address as `testuser` with that password.
+
+Every track plays as a five-second tone, unless you generate the full
+test media first with `make test-media` (it needs ffmpeg). The fake
+serves what Mass TV uses of Music Assistant's API, not all of it.
+
 ## Images and the bundled font
 
 The app's images (`src/images/`) and its bundled font (`src/fonts/`) are

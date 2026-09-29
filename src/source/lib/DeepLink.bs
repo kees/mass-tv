@@ -36,6 +36,17 @@ namespace deeplink
             return result
         end if
 
+        ' A Streaming Store deep link (contentId and mediaType, from Roku
+        ' Search or Roku's test tools): Mass TV has no catalog of its own, so
+        ' it opens as usual. Music Assistant sends t and never mediaType.
+        mediaType = util.get(params, "mediaType")
+        if mediaType = invalid then mediaType = util.get(params, "mediatype")
+        if mediaType <> invalid and t = ""
+            result.action = "reject"
+            result.reason = "store deep link (mediaType " + util.str(mediaType, "?") + "): no catalog"
+            return result
+        end if
+
         if t = "v"
             result.action = "reject"
             result.reason = "video not supported"

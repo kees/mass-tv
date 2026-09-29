@@ -11,7 +11,13 @@ Stdlib only. Usage:
     python3 tools/fake_ma.py --roku 127.0.0.1 [--port 8095] [--host 0.0.0.0]
         [--media test-media] [--codec flac-44k|flac-48k|mp3|aac|flac-96k24]
         [--http-profile no_content_length|chunked|forced_content_length]
-        [--mdns-port 18353 [--mdns-count 6]]
+        [--mdns-port 18353 [--mdns-count 6]] [--app-id ID] [--demo]
+
+To try Mass TV without a Music Assistant server:
+    python3 tools/fake_ma.py --roku <Roku IP> --demo
+then link Mass TV to the address it prints, as testuser. --demo uses
+invented names throughout (the default catalog, which the tests rely on,
+names real artists).
 
 Audio comes from tools/make_test_media.py output (`make test-media`); without
 it, every track is a short sine tone. --http-profile mimics MA's player
@@ -32,6 +38,7 @@ Test hooks (plain HTTP, not part of MA):
 
 import argparse
 import base64
+import colorsys
 import io
 import json
 import math
@@ -42,13 +49,19 @@ import struct
 import threading
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 import wave
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PROVIDER = "example_music--fake01"
+# The music source the catalog appears to come from: an invented
+# streaming service (--demo makes it local files).
+SOURCE_DOMAIN = "example_music"
+SOURCE_NAME = "Example Music"
 SCHEMA = 77
 PLAYER_ID = "ROKU_FAKE0001"
 
@@ -143,11 +156,62 @@ for aid, name in ALBUM_NAMES.items():
                    "metadata": {"images": [img("al" + aid)], "description": ALBUM_TEXTS[aid]}}
 PLAYLISTS = {
     "flow": {"item_id": "flow", "provider": PROVIDER, "name": "Flow", "media_type": "playlist", "is_dynamic": True,
-             "uri": "%s://playlist/flow" % PROVIDER, "owner": "Example Music", "metadata": {"images": [img("flow")]}},
+             "uri": "%s://playlist/flow" % PROVIDER, "owner": SOURCE_NAME, "metadata": {"images": [img("flow")]}},
     "pl1": {"item_id": "pl1", "provider": PROVIDER, "name": "Late Night", "media_type": "playlist",
             "uri": "%s://playlist/pl1" % PROVIDER, "owner": "testuser", "metadata": {"images": [img("pl1")]}},
 }
 PLAYLIST_TRACKS = {"flow": ["t1", "t4", "t6", "t2"], "pl1": ["t6", "t5", "t3"]}
+
+# --demo: invented names throughout and a local source, for trying Mass
+# TV without a Music Assistant server (a reviewer, say): the default
+# catalog names real artists and albums, which the tests rely on.
+DEMO_PROVIDER = "filesystem_local--demo"
+DEMO_NAMES = {
+    "Daft Punk": "The Placeholders",
+    "Sigur Rós": "Test Pattern Orchestra",
+    "坂本龍一": "Demo Tapes",
+    "Discovery": "Sample Rates",
+    "Ágætis byrjun": "Default Settings",
+    "async": "Hello, World",
+    "One More Time": "Sine of the Times",
+    "Aerodynamic": "Loopback",
+    "Digital Love": "Buffer Underrun",
+    "Svefn-g-englar": "Room Tone",
+    "Starálfur": "Test Card",
+    "andata": "Carrier Wave",
+    "Flow": "Mix of the Day",
+}
+
+
+def apply_demo():
+    """Rewrites the catalog for --demo: invented names, a local source."""
+    global PROVIDER, SOURCE_DOMAIN, SOURCE_NAME
+    old = PROVIDER
+
+    def fix(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if k == "name" and v in DEMO_NAMES:
+                    o[k] = DEMO_NAMES[v]
+                elif k == "owner" and v == SOURCE_NAME:
+                    o[k] = "Music Assistant"
+                else:
+                    o[k] = fix(v)
+            if "sort_name" in o:
+                o["sort_name"] = sort_name(o["name"])
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                o[i] = fix(v)
+        elif isinstance(o, str):
+            return o.replace(old, DEMO_PROVIDER)
+        return o
+
+    for coll in (ARTISTS, ALBUMS, PLAYLISTS):
+        fix(coll)
+    fix(TRACKS)
+    for aid in ALBUM_NAMES:
+        ALBUM_NAMES[aid] = DEMO_NAMES.get(ALBUM_NAMES[aid], ALBUM_NAMES[aid])
+    PROVIDER, SOURCE_DOMAIN, SOURCE_NAME = DEMO_PROVIDER, "filesystem_local", "Local files"
 
 
 def make_token(user, days, long_lived):
@@ -172,6 +236,11 @@ class Queue:
         self.repeat = "off"
         self.elapsed = 0.0
         self.anchor = time.time()
+        # What the streamed item's source is, for its stream details: a
+        # streaming service's FLAC 16/44.1 unless only the built-in tone
+        # plays.
+        self.source_format = {"content_type": "flac", "codec_type": "flac", "sample_rate": 44100,
+                              "bit_depth": 16, "channels": 2, "bit_rate": None}
         self.session = uuid.uuid4().hex[:8]
         self.user = None
 
@@ -198,12 +267,11 @@ class Queue:
 
     def streamed_item(self, i):
         # MA fills in stream details for the item it streams: the source's
-        # format (a streaming service's FLAC 16/44.1).
+        # format.
         qi = self.queue_item(i)
         if qi is not None:
             qi["streamdetails"] = {"provider": PROVIDER, "item_id": qi["media_item"]["item_id"],
-                                   "audio_format": {"content_type": "flac", "codec_type": "flac", "sample_rate": 44100,
-                                                    "bit_depth": 16, "channels": 2, "bit_rate": None}}
+                                   "audio_format": dict(self.source_format)}
         return qi
 
 
@@ -220,10 +288,14 @@ class FakeMA:
         self.codec = codec
         self.http_profile = http_profile
         self.api_delay = 0.0
+        self.demo = False
         self.tokens = {}
         self.revoked = []  # token ids revoked via auth/token/revoke
         self.unplayed = []  # (provider, item_id, media_type) removed via music/mark_unplayed
         self.queue = Queue()
+        if not media_dir:
+            self.queue.source_format = {"content_type": "wav", "codec_type": "wav", "sample_rate": 22050,
+                                        "bit_depth": 16, "channels": 1, "bit_rate": None}
         self.lock = threading.RLock()
         self.log = []
         self.seeks = {}  # stream session -> start offset in seconds
@@ -347,7 +419,7 @@ class FakeMA:
         if cmd == "auth/logout":
             return None
         if cmd == "providers":
-            return [{"instance_id": PROVIDER, "domain": "example_music", "name": "Example Music", "type": "music",
+            return [{"instance_id": PROVIDER, "domain": SOURCE_DOMAIN, "name": SOURCE_NAME, "type": "music",
                      "available": True}]
         if cmd == "players/all":
             return [{"player_id": "sonos1", "provider": "sonos", "name": "Kitchen", "available": True},
@@ -390,7 +462,7 @@ class FakeMA:
         if cmd == "music/browse":
             path = args.get("path") or ""
             if not path or path == "root":
-                return [{"item_id": PROVIDER, "provider": PROVIDER, "name": "Example Music", "media_type": "folder", "path": PROVIDER + "://"}]
+                return [{"item_id": PROVIDER, "provider": PROVIDER, "name": SOURCE_NAME, "media_type": "folder", "path": PROVIDER + "://"}]
             if path == PROVIDER + "://":
                 return [{"item_id": "back", "name": "..", "media_type": "folder", "path": "root"},
                         {"item_id": "mfy", "provider": PROVIDER, "name": "Made For You", "media_type": "folder", "path": PROVIDER + "://Made For You"}]
@@ -540,6 +612,19 @@ def tiny_png():
     return base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNoaAAAAYIBAKN0Vl4AAAAASUVORK5CYII=")
 
 
+def solid_png(key, size=64):
+    """A square PNG in a color picked from key (a cover for --demo)."""
+    hue = (sum(key.encode()) * 47) % 360
+    r, g, b = colorsys.hls_to_rgb(hue / 360.0, 0.45, 0.55)
+    row = b"\x00" + bytes((int(r * 255), int(g * 255), int(b * 255))) * size
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(row * size)) + chunk(b"IEND", b""))
+
+
 def make_handler(fake):
     audio = tone_wav()
     png = tiny_png()
@@ -648,7 +733,7 @@ def make_handler(fake):
                 if fake.media_dir and os.path.exists(art):
                     with open(art, "rb") as f:
                         return self.send(200, f.read(), "image/jpeg")
-                return self.send(200, png, "image/png")
+                return self.send(200, solid_png(pid) if fake.demo else png, "image/png")
             if u.path.startswith("/single/") or u.path.startswith("/flow/"):
                 return self.stream(u.path)
             if u.path == "/_fake/token":
@@ -777,7 +862,10 @@ def main():
     ap.add_argument("--port", type=int, default=8095)
     ap.add_argument("--host", default="0.0.0.0", help="bind address")
     ap.add_argument("--public-host", default=None, help="address the Roku uses to reach this server")
-    ap.add_argument("--app-id", default="dev")
+    ap.add_argument("--app-id", default=None,
+                    help="the Roku app to play in (default: Mass TV's, as installed on the Roku, else dev)")
+    ap.add_argument("--demo", action="store_true",
+                    help="invented artist, album, and track names and a local source, for trying Mass TV")
     default_media = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "test-media")
     ap.add_argument("--media", default=default_media, help="output of tools/make_test_media.py")
     ap.add_argument("--codec", default="flac-44k", choices=sorted(CODEC_EXT))
@@ -790,10 +878,14 @@ def main():
     ap.add_argument("--mdns-count", type=int, default=1,
                     help="servers in each mDNS answer: this one plus made-up ones (list scrolling)")
     a = ap.parse_args()
+    if a.demo:
+        apply_demo()
     public = a.public_host or local_address_toward(a.roku)
     media = a.media if os.path.isdir(a.media) else None
-    fake = FakeMA(a.roku, public, a.port, a.app_id, media, a.codec, a.http_profile)
+    app_id = a.app_id or roku_app_id(a.roku)
+    fake = FakeMA(a.roku, public, a.port, app_id, media, a.codec, a.http_profile)
     fake.api_delay = a.api_delay
+    fake.demo = a.demo
     if a.mdns_port:
         # Bound here, so a busy port fails at startup rather than silently.
         msock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -803,7 +895,32 @@ def main():
     srv = ThreadingHTTPServer((a.host, a.port), make_handler(fake))
     print("[fake_ma] listening on %s:%d (public %s), Roku ECP at %s:8060" % (a.host, a.port, public, a.roku))
     print("[fake_ma] media: %s, codec %s, http profile %s" % (media or "built-in tone", a.codec, a.http_profile))
+    print("[fake_ma] playing in Roku app %s%s" % (app_id, ", demo catalog" if a.demo else ""))
+    if a.demo:
+        print("[fake_ma] in Mass TV, link to server %s:%d as %s, password %s"
+              % (public, a.port, "testuser", USERS["testuser"]["password"]))
     srv.serve_forever()
+
+
+def roku_app_id(roku):
+    """Mass TV's app ID on the Roku (a sideloaded one, else a store or beta
+    install), from ECP's app list; "dev" when it can't be read. Also
+    warns when the Roku refuses this computer's ECP commands, which playing
+    needs."""
+    try:
+        with urllib.request.urlopen("http://%s:8060/query/apps" % roku, timeout=5) as r:
+            apps = r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            print("[fake_ma] WARNING: the Roku refuses this computer's commands (HTTP 403), so it can't be told to"
+                  " play. On the Roku: Settings > System > Advanced system settings > Control by mobile apps >"
+                  " Network access: Enabled.")
+        return "dev"
+    except (urllib.error.URLError, OSError) as e:
+        print("[fake_ma] WARNING: can't reach the Roku's ECP at %s:8060 (%s)" % (roku, e))
+        return "dev"
+    found = re.findall(r'<app id="([^"]+)"[^>]*>Mass TV</app>', apps)
+    return "dev" if "dev" in found or not found else found[0]
 
 
 def local_address_toward(host):
