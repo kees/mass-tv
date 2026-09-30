@@ -56,10 +56,11 @@ or endorsed by Music Assistant, the Open Home Foundation, or Roku.
 - Music Assistant 2.10 or newer.
 - A Roku running Roku OS 15.1 or newer.
 - For playback on the TV, Music Assistant's **Media Assistant (Roku)**
-  player provider, with its Roku app ID set to Mass TV's: `dev` for a
-  sideloaded build (soon installable via the Roku Store). Mass TV plays
-  the same deep links as the Media Assistant Roku app, so the provider
-  needs nothing else. Settings > This TV's player shows the app ID to use.
+  player provider, with its Roku app ID set to Mass TV's: `883989` for
+  the Roku Channel Store app, or `dev` for a sideloaded build. Mass TV
+  plays the same deep links as the Media Assistant Roku app, so the
+  provider needs nothing else. Settings > This TV's player shows the app
+  ID to use.
 
 ## Building
 
@@ -79,7 +80,13 @@ Assistant is needed.
 
 ## Running on a Roku
 
-Native Roku Store app installation coming soon ...
+Mass TV is available on the Roku Channel Store: search for "Mass TV" on
+the Roku,
+[add it to your Roku account](https://my.roku.com/account/add?channel=MASSTV),
+or add it from its
+[store page](https://channelstore.roku.com/details/883989). Then link a
+profile to your Music Assistant server, and set the Media Assistant
+(Roku) provider's app ID to `883989` (see Requirements).
 
 ## Sideloading on a Roku
 
@@ -143,7 +150,8 @@ sources, or tool versions change. `make assets` does just this step.
 Mass TV is licensed under the Apache License 2.0 (`LICENSE`).
 
 The bundled font (`src/fonts/`) is built from Noto Sans, Noto Sans CJK,
-Noto Emoji, Noto Sans Arabic, and Noto Sans Hebrew, and like them is
+Noto Emoji, Noto Sans Arabic, Noto Sans Hebrew, Noto Sans Math, Noto
+Sans Symbols, Noto Sans Symbols 2, and Noto Music, and like them is
 under the SIL Open Font License 1.1
 (`fonts/OFL-*.txt`). The logo's lettering is drawn in Roboto, also under
 the SIL Open Font License (`fonts/OFL-Roboto.txt`).
