@@ -84,7 +84,8 @@ Mass TV is available on the Roku Channel Store: search for "Mass TV" on
 the Roku,
 [add it to your Roku account](https://my.roku.com/account/add?channel=MASSTV),
 or add it from its
-[store page](https://channelstore.roku.com/details/883989). Then link a
+[store page](https://channelstore.roku.com/details/fc0588fb13ad2e8bd94263853acd1d60:a86872c07facb1fa2cb013fea671aa17/mass-tv).
+Then link a
 profile to your Music Assistant server, and set the Media Assistant
 (Roku) provider's app ID to `883989` (see Requirements).
 
