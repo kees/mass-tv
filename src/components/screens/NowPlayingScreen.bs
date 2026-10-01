@@ -20,6 +20,12 @@ sub init()
     m.global.ObserveFieldScoped("queueState", "render")
     m.focusTarget = m.transport
     m.ambientOn = false
+    ' Whether a track (by uri) is this profile's favorite: asked of MA when
+    ' it starts playing, and set at once by the Favorite button. MA's queue
+    ' items keep the flag they were queued with, so they're only the
+    ' fallback until MA answers.
+    m.favoriteFor = {}
+    m.favoriteAsked = ""
     ' Not "", so the first render also sets up a missing cover.
     m.lastArt = "(none yet)"
     m.top.ObserveField("params", "onParams")
@@ -184,7 +190,12 @@ sub render()
     if rep = "one" then repeatLabel = "Repeat one"
     ' A mode MA adds later shows as MA names it, not as a plain "Repeat".
     if rep <> "off" and rep <> "all" and rep <> "one" then repeatLabel = "Repeat " + rep
-    liked = util.getPath(playingQueueItem(), "media_item.favorite") = true
+    playingItem = util.get(playingQueueItem(), "media_item")
+    liked = false
+    if util.isAA(playingItem)
+        askFavorite(playingItem)
+        liked = isFavorite(playingItem)
+    end if
     ' Size hints keep each button in place when its label changes.
     isIn = signedIn()
     if isIn
@@ -263,7 +274,7 @@ end function
 
 sub focusRow(row as object)
     m.focusTarget = row
-    row.setFocus(true)
+    focustrack.set(row)
 end sub
 
 sub onTransport()
@@ -297,7 +308,13 @@ sub runButton(id as string)
         actions.queueCommand("player_queues/repeat", { repeat_mode: nextMode })
     else if id = "favorite"
         mi = util.get(playingQueueItem(), "media_item")
-        if util.isAA(mi) then actions.favorite(mi, not (mi.favorite = true))
+        if util.isAA(mi)
+            ' The switch shows the new state at once, as on Detail pages.
+            makeFav = not isFavorite(mi)
+            actions.favorite(mi, makeFav)
+            m.favoriteFor[ma.uriOf(mi)] = makeFav
+            render()
+        end if
     else if id = "queue"
         ' On top of Now Playing, like Lyrics: Back comes back here.
         go("queue", {})
@@ -330,6 +347,34 @@ function playingQueueItem() as dynamic
     return ma.queueItemById(q, id)
 end function
 
+' Whether the playing track is this profile's favorite: what MA said, or
+' the Favorite button set, else the queue item's own flag.
+function isFavorite(item as object) as boolean
+    uri = ma.uriOf(item)
+    if m.favoriteFor.DoesExist(uri) then return m.favoriteFor[uri] = true
+    return item.favorite = true
+end function
+
+' Asks MA once per track whether it's this profile's favorite (its library
+' item says so; MA's queue items keep the flag they were queued with).
+sub askFavorite(item as object)
+    uri = ma.uriOf(item)
+    if uri = "" or uri = m.favoriteAsked or m.favoriteFor.DoesExist(uri) then return
+    m.favoriteAsked = uri
+    args = { media_type: ma.mediaTypeOf(item), item_id: util.str(item.item_id, ""), provider_instance_id_or_domain: util.str(item.provider, "library") }
+    apic.call("music/get_library_item", args, onFavoriteState, { uri: uri })
+end sub
+
+sub onFavoriteState(resp as object, ctx as object)
+    ' Not in the library (or MA failed): the queue item's flag stands.
+    if not resp.ok or not util.isAA(resp.data) then return
+    ' A press while MA answered wins: it's newer.
+    if m.favoriteFor.DoesExist(ctx.uri) then return
+    m.favoriteFor[ctx.uri] = resp.data.favorite = true
+    log.debug("nowplaying", "favorite state", { uri: ctx.uri, favorite: m.favoriteFor[ctx.uri] })
+    render()
+end sub
+
 sub enterAmbient()
     if m.ambientOn then return
     ' Not over an open menu or panel, or under another screen (Lyrics):
@@ -354,7 +399,7 @@ sub enterAmbient()
     ' which they would consume) bubbles to onKeyEvent to wake up. Focusing
     ' m.top wouldn't work: it's already in the focus chain as their parent,
     ' so focus would stay on the buttons.
-    m.ambient.setFocus(true)
+    focustrack.set(m.ambient)
 end sub
 
 sub exitAmbient()
@@ -366,7 +411,7 @@ sub exitAmbient()
     m.chrome.visible = true
     m.bgArt.opacity = 0.08
     m.top.ambient = false
-    m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub
 
 sub resetIdle()

@@ -59,7 +59,7 @@ sub onItems(resp as object, ctx as dynamic)
         end if
     end for
     if m.content.getChildCount() = 0 then showEmpty("This folder is empty.")
-    speakList(m.list, true)
+    speakList(m.list)
     log.debug("browse", "loaded", { path: m.path, items: m.content.getChildCount() })
 end sub
 

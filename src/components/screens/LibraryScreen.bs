@@ -43,8 +43,10 @@ sub init()
     ]
     m.letterRow = m.top.findNode("letterRow")
     m.letterRow.ObserveField("selected", "onLetterPicked")
-    ' The letter subset shown per tab ("All" when none is stored).
-    m.letterFor = {}
+    ' The letter subset shown per tab ("All" when none is stored), kept
+    ' while the app runs (m.global.libraryPlace, see rememberPlace).
+    m.letterFor = util.get(m.global.libraryPlace, "letters")
+    if not util.isAA(m.letterFor) then m.letterFor = {}
     ' Whether the letter row has focus (the level between the tab row and
     ' the grid or list).
     m.inLetters = false
@@ -61,9 +63,10 @@ sub init()
     ' Counts loadTab calls, so replies for an earlier listing are dropped.
     m.gen = 0
     m.tabRing = m.top.findNode("tabRing")
-    ' The tab row speaks for itself (speakTabRow).
+    ' The tab row describes its cursor itself (speakTabRow), for the focus
+    ' tracker.
     m.tabsGroup.muteAudioGuide = true
-    m.tabRowSpoken = ""
+    m.tabsGroup.AddField("cursor", "assocarray", false)
     m.tabBoxes = []
     x = 0
     for each t in m.tabs
@@ -80,18 +83,22 @@ sub init()
     m.tabIndex = 0
     m.tabCursor = 0
     m.tabsFocused = false
-    m.favoritesOnly = false
-    ' Sort per tab ({ field, reverse }, see LibrarySort.bs), remembered in
-    ' the settings.
-    m.sorts = util.get(store.settings(), "librarySorts")
+    ' "Favorites only" per tab (tab id: true), remembered per profile like
+    ' the sort (favoritesOnly reads it).
+    m.favorites = store.profileSetting("libraryFavorites", {})
+    if not util.isAA(m.favorites) then m.favorites = {}
+    ' Sort per tab ({ field, reverse }, see LibrarySort.bs), remembered per
+    ' profile; until a profile picks one, the TV-wide choice from before
+    ' sorts were per profile.
+    m.sorts = store.profileSetting("librarySorts", util.get(store.settings(), "librarySorts"))
     if not util.isAA(m.sorts) then m.sorts = {}
     ' Library opens with focus on its tab row (it's reached from the nav
     ' bar, like a second level of navigation).
     m.inTabs = true
     ' Where the tab row's cursor is: "tab" (m.tabCursor), "view", or "sort".
     m.slot = "tab"
-    ' Grid or list per tab, remembered in the settings.
-    m.views = util.get(store.settings(), "libraryViews")
+    ' Grid or list per tab, remembered per profile (with the same fallback).
+    m.views = store.profileSetting("libraryViews", util.get(store.settings(), "libraryViews"))
     if not util.isAA(m.views) then m.views = {}
     m.gridScroll = m.top.findNode("gridScroll")
     m.gridScroll.list = m.grid
@@ -113,13 +120,21 @@ sub init()
     m.top.ObserveField("aimX", "onAimX")
 end sub
 
+' Opens on the tab asked for, else the one shown when Library was left.
 sub onParams()
     wanted = util.str(util.get(m.top.params, "tab"), "")
+    if wanted = "" then wanted = util.str(util.get(m.global.libraryPlace, "tab"), "")
     for i = 0 to m.tabs.Count() - 1
         if m.tabs[i].id = wanted then m.tabIndex = i
     end for
     m.tabCursor = m.tabIndex
     loadTab()
+end sub
+
+' Keeps the shown tab and each tab's letter for the next Library screen
+' (the nav bar makes a new one each time).
+sub rememberPlace()
+    m.global.libraryPlace = { tab: m.tabs[m.tabIndex].id, letters: m.letterFor }
 end sub
 
 sub onAimX()
@@ -179,8 +194,20 @@ end function
 sub setSort(field as string, reverse as boolean)
     tabId = m.tabs[m.tabIndex].id
     m.sorts[tabId] = { field: field, reverse: reverse }
-    store.setSetting("librarySorts", m.sorts)
+    store.setProfileSetting("librarySorts", m.sorts)
     log.info("library", "sort", { tab: tabId, field: field, reverse: reverse })
+end sub
+
+' Whether the shown tab lists favorites only.
+function favoritesOnly() as boolean
+    return util.get(m.favorites, m.tabs[m.tabIndex].id) = true
+end function
+
+sub setFavoritesOnly(on as boolean)
+    tabId = m.tabs[m.tabIndex].id
+    m.favorites[tabId] = on
+    store.setProfileSetting("libraryFavorites", m.favorites)
+    log.info("library", "favorites only", { tab: tabId, on: on })
 end sub
 
 function isListView() as boolean
@@ -218,7 +245,7 @@ end function
 sub toggleView()
     tabId = m.tabs[m.tabIndex].id
     if viewFor(tabId) = "list" then m.views[tabId] = "grid" else m.views[tabId] = "list"
-    store.setSetting("libraryViews", m.views)
+    store.setProfileSetting("libraryViews", m.views)
     log.info("library", "view", { tab: tabId, view: m.views[tabId] })
     loadTab()
 end sub
@@ -227,6 +254,7 @@ sub loadTab()
     apic.cancelAll()
     m.gen = m.gen + 1
     tabDef = m.tabs[m.tabIndex]
+    rememberPlace()
     m.content = CreateObject("roSGNode", "ContentNode")
     m.target = currentLetter()
     m.reverse = currentSort().reverse
@@ -253,10 +281,10 @@ sub loadTab()
         m.focusTarget = m.tabsGroup
     else if m.inLetters
         m.focusTarget = m.letterRow
-        m.letterRow.setFocus(true)
+        focustrack.set(m.letterRow)
     else
         m.focusTarget = view
-        view.setFocus(true)
+        focustrack.set(view)
     end if
     startListing()
 end sub
@@ -273,11 +301,6 @@ sub renderTabs()
     rowFocused = m.tabsGroup.hasFocus()
     slot = ""
     if rowFocused then slot = m.slot
-    if slot = "tab"
-        log.debug("library", "focus tab " + m.tabs[m.tabCursor].id)
-    else if slot <> ""
-        log.debug("library", "focus tab " + slot)
-    end if
     for i = 0 to m.tabsGroup.getChildCount() - 1
         lbl = m.tabsGroup.getChild(i)
         ' The shown tab stays blue (selected) even under the cursor, where
@@ -297,8 +320,8 @@ sub renderTabs()
     text = ""
     if sortShown()
         text = "Sort: " + librarysort.describe(s.field, s.reverse)
-        if m.favoritesOnly then text = "Favorites only · " + text
-    else if m.favoritesOnly
+        if favoritesOnly() then text = "Favorites only · " + text
+    else if favoritesOnly()
         text = "Favorites only"
     end if
     m.filterLabel.text = text
@@ -326,6 +349,7 @@ sub renderTabs()
     else
         m.tabRing.visible = false
     end if
+    focusring.logShown("tabs", m.tabRing.visible)
     ' Where Up to the nav bar should aim (the tab row is the top row).
     if rowFocused then m.top.focusX = cursorCenterX() else m.top.focusX = -1
     speakTabRow(slot)
@@ -336,17 +360,25 @@ end sub
 ' "Albums, tab 2 of 4, shown", "View: Grid, button".
 sub speakTabRow(slot as string)
     text = ""
+    data = { id: slot }
     if slot = "tab"
         parts = [m.tabs[m.tabCursor].label, "tab " + speech.position(m.tabCursor, m.tabs.Count())]
         if m.tabCursor = m.tabIndex then parts.Push("shown")
         text = speech.join(parts)
+        data = { index: m.tabCursor, id: m.tabs[m.tabCursor].id, label: m.tabs[m.tabCursor].label }
     else if slot = "view"
         text = speech.join([m.viewLabel.text, "button"])
+        data.label = m.viewLabel.text
     else if slot = "sort"
         text = speech.join([m.filterLabel.text, "button"])
+        data.label = m.filterLabel.text
     end if
-    if text <> "" and text <> m.tabRowSpoken then speech.say(text)
-    m.tabRowSpoken = text
+    ' For the focus tracker: the slot is the cursor's place (the same slot
+    ' with new words, shown or a new sort, is said without counting as a
+    ' move).
+    at = ""
+    if slot <> "" then at = slot + "|" + m.tabCursor.ToStr()
+    m.tabsGroup.cursor = focustrack.describe("tabs", at, text, data)
 end sub
 
 ' PAGE_SIZE, or a debug build's masstv_page_size.
@@ -375,7 +407,7 @@ sub startListing()
         loadPages(0)
     end if
     args = {}
-    if m.favoritesOnly then args.favorite_only = true
+    if favoritesOnly() then args.favorite_only = true
     apic.call(tabDef.count, args, onCount, { tab: tabDef.id, gen: m.gen })
 end sub
 
@@ -431,7 +463,7 @@ end function
 ' The shown tab's listing arguments: its sort and the favorites switch.
 function listArgs(limit as integer, offset as integer) as object
     args = { limit: limit, offset: offset, order_by: currentOrder() }
-    if m.favoritesOnly then args.favorite = true
+    if favoritesOnly() then args.favorite = true
     return args
 end function
 
@@ -553,7 +585,7 @@ end sub
 ' symbol."
 function letterEmptyText() as string
     kind = LCase(m.tabs[m.tabIndex].label)
-    if m.favoritesOnly then kind = "favorite " + kind
+    if favoritesOnly() then kind = "favorite " + kind
     if m.target = letters.OTHER then return "No " + kind + " starting with a digit or symbol."
     return "No " + kind + " under " + m.target + "."
 end function
@@ -561,7 +593,7 @@ end function
 sub showEmptyListing()
     if m.target <> letters.ALL
         showEmpty(letterEmptyText())
-    else if m.favoritesOnly
+    else if favoritesOnly()
         showEmpty("No favorites here yet.")
     else
         showEmpty("Nothing in your library here yet.")
@@ -600,7 +632,14 @@ sub onPage(resp as object, ctx as object)
     log.debug("library", "page", { tab: ctx.tab, page: ctx.page, got: items.Count(), shown: shown, total: m.paging.total, letter: m.target })
     focus = focusIndex()
     if ctx.page = 0
-        speakList(currentView(), true)
+        ' OK on a tab went down to a listing that just arrived: its first
+        ' item is the focused one now (for Play, the hint, and the log).
+        if currentView().hasFocus() then m.top.focusedItem = itemAt(focus)
+        updateListHint()
+        ' Said again now that it has a name (the placeholder it replaced
+        ' was said as only its place); the same text isn't repeated, and
+        ' the cursor didn't move, so it isn't logged as a focus move.
+        speakList(currentView())
         findEnd()
     else if focus >= first and focus < first + items.Count()
         ' The focused placeholder was filled in.
@@ -654,6 +693,9 @@ sub showEmpty(text as string)
     log.debug("library", "empty", { text: text })
     m.empty.text = text
     m.empty.visible = true
+    ' Nothing to land on: OK on a tab went down to an empty grid or list,
+    ' so back up to the shown tab. (The letter row keeps its focus.)
+    if not m.inTabs and not m.inLetters then focusTabs(-1)
 end sub
 
 function itemAt(idx as integer) as dynamic
@@ -704,7 +746,7 @@ end sub
 ' closes the menu; the switches apply at once and keep it open, the list
 ' re-sorting behind it and the labels following. Back closes it.
 sub showLibraryOptions()
-    log.debug("library", "options menu", { sort: currentSort(), favoritesOnly: m.favoritesOnly })
+    log.debug("library", "options menu", { sort: currentSort(), favoritesOnly: favoritesOnly() })
     menu = CreateObject("roSGNode", "OptionsMenu")
     menu.title = "Sort " + m.tabs[m.tabIndex].label
     ' Size for both directions' labels, which Reverse switches between.
@@ -743,7 +785,7 @@ function libraryOptionsChosen() as object
         chosen.Push(id = s.field)
     end for
     chosen.Push(s.reverse)
-    chosen.Push(m.favoritesOnly)
+    chosen.Push(favoritesOnly())
     return chosen
 end function
 
@@ -752,7 +794,7 @@ sub closeLibraryOptions()
     log.debug("library", "options menu closed", currentSort())
     m.top.getScene().removeChild(m.optionsMenu)
     m.optionsMenu = invalid
-    if m.focusTarget <> invalid then m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub
 
 sub onLibraryOption(event as object)
@@ -769,8 +811,7 @@ sub onLibraryOption(event as object)
     else if idx = fields.Count()
         setSort(s.field, not s.reverse)
     else
-        m.favoritesOnly = not m.favoritesOnly
-        log.info("library", "favorites only", { on: m.favoritesOnly })
+        setFavoritesOnly(not favoritesOnly())
     end if
     m.optionsMenu.items = libraryOptionLabels()
     m.optionsMenu.chosen = libraryOptionsChosen()
@@ -782,15 +823,20 @@ end sub
 ' below; Back goes up one level, to the shown tab or letter (the nav bar
 ' is the level above the tab row: MainScene).
 
-' Down from the tab row: to the letter row, else the grid or list.
+' Down from the tab row: to the letter row, else the grid or list (not
+' onto an empty listing: nothing there to land on).
 sub leaveTabs()
     x = cursorCenterX()
-    m.inTabs = false
-    m.slot = "tab"
     if hasLetters()
+        m.inTabs = false
+        m.slot = "tab"
         focusLetters(x)
-    else
+    else if not m.empty.visible
+        m.inTabs = false
+        m.slot = "tab"
         enterContent(x)
+    else
+        log.debug("library", "nothing below", { text: m.empty.text })
     end if
 end sub
 
@@ -800,7 +846,7 @@ sub focusLetters(x as float)
     m.inLetters = true
     m.letterRow.aimX = x
     m.focusTarget = m.letterRow
-    m.letterRow.setFocus(true)
+    focustrack.set(m.letterRow)
     renderTabs()
 end sub
 
@@ -816,7 +862,7 @@ sub enterContent(x as float)
     m.inTabs = false
     m.inLetters = false
     m.focusTarget = view
-    m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
     renderTabs()
 end sub
 
@@ -828,7 +874,7 @@ sub focusTabs(x as float)
     m.tabCursor = m.tabIndex
     if x >= 0 then aimTabRowAt(x)
     m.focusTarget = m.tabsGroup
-    m.tabsGroup.setFocus(true)
+    focustrack.set(m.tabsGroup)
     renderTabs()
 end sub
 
@@ -897,7 +943,12 @@ function onKeyEvent(key as string, press as boolean) as boolean
             focusTabs(-1)
             return true
         else if key = "down"
-            enterContent(m.letterRow.cursorX)
+            ' An empty letter ("No albums under B.") has nothing to land on.
+            if m.empty.visible
+                log.debug("library", "nothing below", { text: m.empty.text })
+            else
+                enterContent(m.letterRow.cursorX)
+            end if
             return true
         end if
         return false
@@ -957,11 +1008,18 @@ function onKeyEvent(key as string, press as boolean) as boolean
             renderTabs()
             return true
         else if key = "OK"
-            ' Show the tab under the cursor; focus stays on the row. OK on
-            ' the tab already shown reloads it (e.g. to pick up new covers).
+            ' Show the tab under the cursor, and go down to what it shows,
+            ' like the nav bar: the letter row (on the shown letter) or the
+            ' first item. OK on the tab already shown reloads it (e.g. to
+            ' pick up new covers).
             log.debug("library", "tab ok", { tab: m.tabs[m.tabCursor].id, reload: m.tabCursor = m.tabIndex })
             m.tabIndex = m.tabCursor
+            m.inTabs = false
+            m.slot = "tab"
+            m.inLetters = hasLetters()
             loadTab()
+            ' the tab's own shown letter is the row's once loadTab laid it out
+            if m.inLetters then focusLetters(-1)
             return true
         else if key = "down"
             leaveTabs()

@@ -20,6 +20,9 @@
         <field id="aimX" type="float" value="-1" alwaysNotify="true" onChange="onAimX" />
         <field id="cursorX" type="float" value="-1" />
         <field id="context" type="string" value="Letters" />
+        <!-- Output: what's under the cursor (focustrack.describe), for MainScene's
+             focus tracker. -->
+        <field id="cursor" type="assocarray" />
     </interface>
     <children>
         <!-- The cursor's focus ring (only while the row has focus), behind

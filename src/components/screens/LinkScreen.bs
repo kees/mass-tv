@@ -13,8 +13,7 @@ sub init()
     m.spinner = m.top.findNode("spinner")
     m.spinner.poster.uri = "pkg:/images/spinner.png"
     m.fields.ObserveField("itemSelected", "onButton")
-    m.fields.ObserveField("itemFocused", "onButtonFocused")
-    speakLists([m.fields])
+    speakLists([m.fields], { fields: "rows" })
     m.linkButton = m.top.findNode("linkButton")
     m.linkButton.buttons = ["Link profile"]
     m.linkButton.ObserveField("selected", "onLinkButton")
@@ -29,13 +28,6 @@ sub init()
     m.pairing = invalid
     m.top.ObserveField("params", "onParams")
     m.top.ObserveField("closing", "onClosing")
-end sub
-
-sub onButtonFocused()
-    i = m.fields.itemFocused
-    n = invalid
-    if m.fields.content <> invalid then n = m.fields.content.getChild(i)
-    if n <> invalid then log.debug("link", "focus", { index: i, label: n.title })
 end sub
 
 ' Up and Down wrap through the two fields and the Link profile button.
@@ -61,9 +53,9 @@ sub focusForm(target as integer)
         m.fields.jumpToItem = target
         m.focusTarget = m.fields
     end if
-    m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
     ' The fields and the button share a group: say the field landed on.
-    if target < 2 then speakListAfresh(m.fields)
+    if target < 2 then speakList(m.fields)
 end sub
 
 sub onLinkButton()
@@ -312,5 +304,5 @@ sub onKeyboardButton(event as object)
 end sub
 
 sub onKeyboardClosed()
-    m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub

@@ -44,7 +44,7 @@ sub onQueryButton(event as object)
 end sub
 
 sub onDialogClosed()
-    m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub
 
 sub runSearch(q as string)
@@ -100,9 +100,9 @@ sub onResults(resp as object, ctx as object)
         m.status.text = util.counted(total, "result")
         ' Said with the first result, as the rows take focus.
         m.listLead = m.status.text
-        m.focusTarget = m.rows
-        m.rows.setFocus(true)
         speakList(m.rows)
+        m.focusTarget = m.rows
+        focustrack.set(m.rows)
     end if
     log.info("search", "results", { query: m.query, total: total })
 end sub
@@ -126,7 +126,8 @@ end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
-    if key = "down" and m.button.isInFocusChain() and m.rows.content <> invalid
+    ' Nothing to land on (no results yet, or none): the focus stays.
+    if key = "down" and m.button.isInFocusChain() and m.rows.content <> invalid and m.rows.content.getChildCount() > 0
         m.focusTarget = m.rows
         aim.moveFocus(m.button, m.rows)
         return true

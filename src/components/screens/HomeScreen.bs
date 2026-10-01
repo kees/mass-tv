@@ -109,7 +109,7 @@ sub rowDone()
     if first <> invalid and first.getChildCount() > 0
         m.loadingIndicator.active = false
         m.top.contentReady = true
-        speakList(m.rows, true)
+        speakList(m.rows)
     end if
     if m.pendingRows > 0 then return
     m.loadingIndicator.active = false
@@ -122,7 +122,7 @@ sub rowDone()
         showEmpty("Nothing here yet. Play something from Library or Search, or check that a music service is connected in Music Assistant.")
     end if
     ' The rows had focus while loading: say where it landed.
-    speakList(m.rows, true)
+    speakList(m.rows)
 end sub
 
 sub showEmpty(text as string)

@@ -38,6 +38,18 @@ namespace log
         log.write(log.LEVEL_TRACE, cat, msg, data)
     end sub
 
+    ' Where the focus went, in one format for every widget, so a script can
+    ' follow it: category "focus", the widget kind as the message (nav,
+    ' buttons, tabs, letters, menu, rows, items, tracks, lines, servers,
+    ' address), and the screen it's on plus what the widget knows: index,
+    ' id, label, kind (media type), uri, name.
+    sub focus(widget as string, data = {} as object)
+        if not log.enabled(log.LEVEL_DEBUG) then return
+        g = log.globalNode()
+        if g <> invalid and g.hasField("currentScreen") then data.screen = g.currentScreen
+        log.write(log.LEVEL_DEBUG, "focus", widget, data)
+    end sub
+
     function enabled(lvl as integer) as boolean
         return lvl <= log.currentLevel()
     end function

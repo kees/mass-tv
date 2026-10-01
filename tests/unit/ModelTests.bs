@@ -30,7 +30,11 @@ sub maApiTests()
     bio = "**Test Band** formed in 1999." + lf + lf + "See [their site](https://example.com/band) &amp; <b>more</b>." + Chr(13) + lf + "# Early years" + lf + "They toured."
     tst.eq(ma.descriptionOf({ metadata: { description: bio } }), "Test Band formed in 1999. See their site & more. Early years They toured.", "description as plain text")
     tst.eq(ma.descriptionOf({ media_type: "artist", name: "No Bio" }), "", "no description")
-    tst.eq(ma.descriptionOf({ media_type: "album", metadata: { review: "A review.", description: "About." } }), "A review.", "album review first")
+    both = { media_type: "album", metadata: { review: "A review.", description: "About." } }
+    tst.eq(ma.descriptionOf(both), "About. A review.", "album description, then its review")
+    tst.eq(ma.descriptionOf(both, true), "About." + lf + lf + "A review.", "as paragraphs: a blank line between them")
+    tst.eq(ma.descriptionOf({ media_type: "album", metadata: { review: "A review." } }, true), "A review.", "album review alone")
+    tst.eq(ma.descriptionOf({ media_type: "album", metadata: { review: "Same.", description: "Same." } }, true), "Same.", "the same text once")
     tst.eq(ma.descriptionOf({ media_type: "album", metadata: { description: "About." } }), "About.", "album description")
     tst.eq(ma.descriptionOf({ media_type: "artist", metadata: { review: "A review." } }), "", "only albums use review")
     tst.eq(ma.plainText("It&#39;s &quot;fine&quot; &lt;3"), "It's " + Chr(34) + "fine" + Chr(34) + " <3", "entities decoded")

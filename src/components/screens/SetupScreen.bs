@@ -17,9 +17,8 @@ sub init()
     m.spinner = m.top.findNode("spinner")
     m.spinner.poster.uri = "pkg:/images/spinner.png"
     m.servers.ObserveField("itemSelected", "onServerChosen")
-    m.servers.ObserveField("itemFocused", "onServerFocused")
     m.address.ObserveField("itemSelected", "onAddressSelected")
-    speakLists([m.servers, m.address])
+    speakLists([m.servers, m.address], { servers: "servers", address: "address" })
     m.actions.ObserveField("selected", "onAction")
     m.nowPlaying.buttons = ["Now Playing"]
     m.nowPlaying.ObserveField("selected", "onNowPlaying")
@@ -86,19 +85,9 @@ sub onClosing()
     end if
 end sub
 
-' The address row's field and the server list log their focus here (the
-' ButtonRows log their own).
 sub focusOn(node as object)
     m.focusTarget = node
-    node.setFocus(true)
-    if node.isSameNode(m.address)
-        log.debug("setup", "focus", { label: "address" })
-    else if node.isSameNode(m.servers)
-        onServerFocused()
-    end if
-    ' The lists share a group, so the screen's focus change doesn't reach
-    ' them from inside it: say where the cursor landed here.
-    if node.isSameNode(m.address) or node.isSameNode(m.servers) then speakListAfresh(node)
+    focustrack.set(node)
 end sub
 
 ' --- discovery ---
@@ -137,7 +126,8 @@ sub onDiscovered()
     renderServers()
     ' Nothing chosen and no key pressed yet: offer the list.
     if added > 0 and not m.touched and m.server = "" then focusOn(m.servers)
-    if r.ok and m.top.visible then m.timer.control = "start"
+    ' Asked again even after a failed send (no network yet), while shown.
+    if m.top.visible then m.timer.control = "start"
 end sub
 
 ' The list of servers, the one matching the address in blue. Rebuilt only
@@ -169,7 +159,7 @@ sub renderServers()
         m.servers.content = root
         if target > 0 then m.servers.jumpToItem = target
     end if
-    speakList(m.servers, true)
+    speakList(m.servers)
     if m.found.Count() > 0
         m.discovery.text = ""
     else if m.searched
@@ -189,11 +179,6 @@ sub renderAddress()
     row.title = shown
     speech.setSuffix(row, "Music Assistant server address")
     m.address.content = root
-end sub
-
-sub onServerFocused()
-    i = m.servers.itemFocused
-    if i >= 0 and i < m.found.Count() then log.debug("setup", "focus", { server: m.found[i].name, index: i })
 end sub
 
 ' A server from the list fills the address; the cursor moves on to Link.
@@ -344,5 +329,5 @@ sub onKeyboardButton(event as object)
 end sub
 
 sub onKeyboardClosed()
-    m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub

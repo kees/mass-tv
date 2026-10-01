@@ -32,6 +32,8 @@ Test hooks (plain HTTP, not part of MA):
     GET  /_fake/token?user=testuser   mint a long-lived token for a fake user
                                   (&days=N: expiring in N days, default 365)
     POST /_fake/play?uri=...      act like someone pressed play in MA's UI
+    POST /_fake/roku_player?listed=0|1  drop the Roku player from players/all, or
+                                  list it again (as MA's Roku provider reloading)
     GET  /_fake/state             the fake queue state, revoked token ids, and
                                   items removed from recently played
 """
@@ -281,6 +283,8 @@ CODEC_EXT = {"flac-44k": "flac", "flac-48k": "flac", "flac-96k24": "flac", "mp3"
 class FakeMA:
     def __init__(self, roku, public_host, port, app_id, media_dir=None, codec="flac-44k", http_profile="no_content_length"):
         self.roku = roku
+        # the address players/all gives the Roku player (--roku-player-ip)
+        self.roku_player_ip = roku
         self.public_host = public_host
         self.port = port
         self.app_id = app_id
@@ -292,6 +296,7 @@ class FakeMA:
         self.tokens = {}
         self.revoked = []  # token ids revoked via auth/token/revoke
         self.unplayed = []  # (provider, item_id, media_type) removed via music/mark_unplayed
+        self.roku_listed = True  # players/all lists the Roku player (POST /_fake/roku_player)
         self.queue = Queue()
         if not media_dir:
             self.queue.source_format = {"content_type": "wav", "codec_type": "wav", "sample_rate": 22050,
@@ -422,9 +427,12 @@ class FakeMA:
             return [{"instance_id": PROVIDER, "domain": SOURCE_DOMAIN, "name": SOURCE_NAME, "type": "music",
                      "available": True}]
         if cmd == "players/all":
-            return [{"player_id": "sonos1", "provider": "sonos", "name": "Kitchen", "available": True},
-                    {"player_id": PLAYER_ID, "provider": "roku_media_assistant", "name": "Living Room", "available": True,
-                     "device_info": {"identifiers": {"ip_address": self.roku}}}]
+            players = [{"player_id": "sonos1", "provider": "sonos", "name": "Kitchen", "available": True}]
+            if self.roku_listed:
+                players.append({"player_id": PLAYER_ID, "provider": "roku_media_assistant", "name": "Living Room",
+                                "available": True,
+                                "device_info": {"identifiers": {"ip_address": self.roku_player_ip}}})
+            return players
         if cmd == "music/recently_played_items":
             played = [ALBUMS["al2"], TRACKS[0], PLAYLISTS["pl1"]]
             return [i for i in played
@@ -503,8 +511,17 @@ class FakeMA:
                         it["favorite"] = True
             return None
         if cmd == "music/get_library_item":
-            return {"item_id": "lib-" + str(args.get("item_id")), "provider": "library"}
+            # the library item says whether it's a favorite, as MA's does
+            found = [it for coll in (ALBUMS.values(), PLAYLISTS.values(), TRACKS) for it in coll
+                     if it["item_id"] == args.get("item_id")]
+            return {"item_id": "lib-" + str(args.get("item_id")), "provider": "library",
+                    "favorite": bool(found and found[0].get("favorite"))}
         if cmd == "music/favorites/remove_item":
+            lib_id = str(args.get("library_item_id", "")).removeprefix("lib-")
+            for coll in (ALBUMS.values(), PLAYLISTS.values(), TRACKS):
+                for it in coll:
+                    if it["item_id"] == lib_id:
+                        it["favorite"] = False
             return None
         if cmd == "player_queues/get" or cmd == "player_queues/get_active_queue":
             return q.as_dict()
@@ -756,6 +773,10 @@ def make_handler(fake):
                 with fake.lock:
                     fake.play_media({"media": qs.get("uri"), "option": "replace"}, USERS["testuser"])
                 return self.send(200, "ok", "text/plain")
+            if u.path == "/_fake/roku_player":
+                qs = dict(urllib.parse.parse_qsl(u.query))
+                fake.roku_listed = qs.get("listed", "1") != "0"
+                return self.send(200, "ok", "text/plain")
             if u.path != "/api":
                 return self.send(404, "not found", "text/plain")
             try:
@@ -859,6 +880,9 @@ def serve_mdns(sock, public, port, count):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--roku", required=True, help="Roku (or simulator) IP for ECP")
+    ap.add_argument("--roku-player-ip", default=None,
+                    help="the address players/all gives the Roku player (default: --roku); the app finds"
+                         " its player by its own address, which a simulator reached over loopback differs from")
     ap.add_argument("--port", type=int, default=8095)
     ap.add_argument("--host", default="0.0.0.0", help="bind address")
     ap.add_argument("--public-host", default=None, help="address the Roku uses to reach this server")
@@ -884,6 +908,7 @@ def main():
     media = a.media if os.path.isdir(a.media) else None
     app_id = a.app_id or roku_app_id(a.roku)
     fake = FakeMA(a.roku, public, a.port, app_id, media, a.codec, a.http_profile)
+    fake.roku_player_ip = a.roku_player_ip or a.roku
     fake.api_delay = a.api_delay
     fake.demo = a.demo
     if a.mdns_port:

@@ -26,7 +26,7 @@ sub init()
     m.rows.ObserveField("rowItemSelected", "onRowSelected")
     m.rows.ObserveField("rowItemFocused", "onRowFocused")
     m.focusTarget = m.buttons
-    speakLists([m.tracks, m.rows])
+    speakLists([m.tracks, m.rows], { tracks: "tracks" })
     m.trackData = []
     m.listFromHere = false
     m.canSortByDate = false
@@ -613,9 +613,6 @@ sub onTrackFocused()
     ' itemFocused also fires when content loads, before the list has focus.
     if not m.tracks.isInFocusChain() then return
     t = trackAt(m.tracks.itemFocused)
-    ' focusedItem stays the album or playlist (Play starts it here), so
-    ' log the track itself.
-    if util.isAA(t) then log.debug("detail", "focus track", { index: m.tracks.itemFocused, uri: ma.uriOf(t), name: util.get(t, "name") })
     setFocusedPlay(t)
 end sub
 
@@ -657,8 +654,9 @@ function onKeyEvent(key as string, press as boolean) as boolean
     content = m.tracks
     if m.usesRows then content = m.rows
     if key = "down" and m.buttons.isInFocusChain()
-        ' A track's page with no rows (no album or artists to show).
-        if m.usesRows and (m.rows.content = invalid or m.rows.content.getChildCount() = 0) then return true
+        ' Nothing to land on (a track's page with no album or artists to
+        ' show, an album with no tracks): the focus stays on the buttons.
+        if content.content = invalid or content.content.getChildCount() = 0 then return true
         m.focusTarget = content
         ' Onto the card below the button (the track list keeps its track).
         aim.moveFocus(m.buttons, content)
@@ -681,7 +679,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         ' buttons too (Back there leaves the page). The list keeps its
         ' focused item, so Down comes back to it.
         m.focusTarget = m.buttons
-        m.buttons.setFocus(true)
+        focustrack.set(m.buttons)
         setFocusedPlay(invalid)
         return true
     end if

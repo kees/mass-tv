@@ -267,6 +267,8 @@ end sub
 sub onResume()
     if not m.data.synced then return
     m.following = true
+    ' Following playback, the line isn't a cursor of the user's.
+    m.top.cursor = focustrack.describe("lines", "", "", {})
     m.current = -2
     onFollow()
 end sub
@@ -278,6 +280,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
     ' Up from the first line goes on to the nav bar (MainScene).
     if key = "up" and m.cursor <= 0 then return false
     if key = "up" or key = "down"
+        before = m.cursor
         if key = "down" and m.cursor < n - 1 then m.cursor = m.cursor + 1
         if key = "up" and m.cursor > 0 then m.cursor = m.cursor - 1
         if key = "up" and m.cursor < 0 then m.cursor = 0
@@ -286,8 +289,9 @@ function onKeyEvent(key as string, press as boolean) as boolean
         if m.data.synced then m.resume.control = "start"
         render()
         scrollToLine(m.cursor, true)
-        log.debug("lyrics", "focus line", { index: m.cursor })
-        speech.say(util.str(m.data.lines[m.cursor].text, ""))
+        ' The cursor line, for the focus tracker (Down on the last line
+        ' leaves it where it was: no move).
+        if m.cursor <> before then m.top.cursor = focustrack.describe("lines", m.cursor.ToStr(), util.str(m.data.lines[m.cursor].text, ""), { index: m.cursor })
         return true
     else if key = "OK" and m.data.synced and m.cursor >= 0
         t = m.data.lines[m.cursor].t

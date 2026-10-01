@@ -61,6 +61,11 @@ sub onItems(resp as object, ctx as dynamic)
         m.empty.visible = true
         return
     end if
+    ' A reload (an edit, a track change) keeps the cursor on its row,
+    ' moving up when the list got shorter than that; the first load starts
+    ' on the NOW row.
+    keepRow = -1
+    if m.list.content <> invalid and m.list.content.getChildCount() > 0 then keepRow = m.list.itemFocused
     root = CreateObject("roSGNode", "ContentNode")
     i = m.windowStart
     focusIdx = 0
@@ -105,13 +110,18 @@ sub onItems(resp as object, ctx as dynamic)
         root.appendChild(n)
         i = i + 1
     end for
+    if keepRow >= 0
+        focusIdx = keepRow
+        if focusIdx > root.getChildCount() - 1 then focusIdx = root.getChildCount() - 1
+        if focusIdx < 0 then focusIdx = 0
+    end if
     m.list.content = root
     m.list.jumpToItem = focusIdx
-    speakList(m.list, true)
+    speakList(m.list)
     m.empty.visible = root.getChildCount() = 0
     total = util.get(m.global.queueState, "items")
     if util.isNumber(total) then m.count.text = util.counted(total, "item")
-    log.debug("queue", "rows", { shown: root.getChildCount(), from: m.windowStart })
+    log.debug("queue", "rows", { shown: root.getChildCount(), from: m.windowStart, cursor: focusIdx })
 end sub
 
 function entryAt(idx as integer) as dynamic

@@ -26,6 +26,9 @@
         <!-- A tap-or-hold key held keys.HOLD_MS (set in init). -->
         <Timer id="holdTimer" repeat="false" duration="0.6" />
         <Timer id="bootTimer" repeat="false" duration="0.05" />
+        <!-- The focus tracker reports once the focus settles: a focus set,
+             then aimed, or a list reporting its item twice, is one move. -->
+        <Timer id="focusTimer" repeat="false" duration="0.02" />
         <!-- One extra queue poll shortly after a track change or command,
              once MA has updated its queue. -->
         <Timer id="kickTimer" repeat="false" duration="1.2" />

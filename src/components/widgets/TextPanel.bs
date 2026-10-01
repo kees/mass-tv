@@ -2,6 +2,8 @@ import "pkg:/source/lib/Util.bs"
 import "pkg:/source/lib/Log.bs"
 import "pkg:/source/lib/Speech.bs"
 import "pkg:/source/lib/Fonts.bs"
+import "pkg:/source/lib/Keys.bs"
+import "pkg:/source/lib/Focus.bs"
 
 ' The text's width, the panel's padding, and the space kept free above
 ' and below the panel (so the panel, Close included, always fits).
@@ -87,7 +89,7 @@ sub scrollTo(offset as integer)
 end sub
 
 sub onActive()
-    if m.top.active then m.closeButton.setFocus(true)
+    if m.top.active then focustrack.set(m.closeButton)
 end sub
 
 sub onClose()
@@ -95,9 +97,11 @@ sub onClose()
     m.top.closed = true
 end sub
 
-' Close has the focus; Up/Down scroll the text, Back closes, and every
-' other key stops here, so nothing behind the panel reacts.
+' Close has the focus; Up/Down scroll the text, Back closes, the playback
+' keys go on to the scene (as everywhere), and every other key stops
+' here, so nothing behind the panel reacts.
 function onKeyEvent(key as string, press as boolean) as boolean
+    if keys.isGlobal(key) then return false
     if not press then return true
     if key = "down" or key = "up"
         before = m.offset

@@ -4,7 +4,9 @@ import "pkg:/source/lib/Log.bs"
 ' What Roku's screen reader (Audio Guide) says in Mass TV.
 '
 ' Roku's dialogs and keyboards speak themselves. Everything else mutes
-' Roku's reading (muteAudioGuide) and speaks through speech.say, which
+' Roku's reading (muteAudioGuide) and speaks through speech.say (focus
+' moves through MainScene's focus tracker and speech.focused, which also
+' logs them), which
 ' roAudioGuide voices only while Audio Guide is on: the nav bar, button
 ' rows, Library's tab row, menus, the text panel, toasts, and every list
 ' and grid (BaseScreen's speakLists: Roku's own reading of lists skipped
@@ -24,6 +26,19 @@ namespace speech
         if m.speechGuide <> invalid then m.speechGuide.Say(text, flush, false)
     end sub
 
+    ' The focus moved: one call for both of its audiences. The move is
+    ' logged (log.focus: the widget kind and what it knows, with what's
+    ' said as `said`) for tests and device checks, and said for the screen
+    ' reader, cutting off what was being said. Only MainScene's focus
+    ' tracker calls it (lib/Focus.bs), from the focused widget's `cursor`;
+    ' news that isn't a move (a toast, a status line) uses speech.say.
+    sub focused(widget as string, data as object, text as string)
+        said = speech.clean(text)
+        if said <> "" then data.said = said
+        log.focus(widget, data)
+        speech.say(text)
+    end sub
+
     ' Text as it should be read: the " · " that separates things on screen
     ' becomes a pause, an en dash a "to" ("Name (Z–A)", "1998–2004").
     function clean(text as dynamic) as string
@@ -32,7 +47,9 @@ namespace speech
         while Instr(1, out, "  ") > 0
             out = out.Replace("  ", " ")
         end while
-        return out.Trim()
+        ' A separator with wider spacing ("Name  ·  Server") leaves a space
+        ' before its comma.
+        return out.Replace(" ,", ",").Trim()
     end function
 
     ' A length in words ("3 minutes 20 seconds"): read as digits, "3:20"

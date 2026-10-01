@@ -25,8 +25,7 @@ sub init()
     placeFixed()
     m.top.findNode("listScroll").list = m.list
     m.list.ObserveField("itemSelected", "onSelected")
-    m.list.ObserveField("itemFocused", "onFocused")
-    speakLists([m.list])
+    speakLists([m.list], { list: "rows" })
     m.focusTarget = m.list
     m.top.ObserveField("params", "onParams")
 end sub
@@ -62,12 +61,12 @@ end sub
 sub focusList(index as integer)
     if index >= 0 then m.list.jumpToItem = index
     m.focusTarget = m.list
-    m.list.setFocus(true)
+    focustrack.set(m.list)
 end sub
 
 sub focusButton()
     m.focusTarget = m.linkButton
-    m.linkButton.setFocus(true)
+    focustrack.set(m.linkButton)
 end sub
 
 sub onLink()
@@ -124,12 +123,6 @@ function onKeyEvent(key as string, press as boolean) as boolean
     end if
     return false
 end function
-
-sub onFocused()
-    n = invalid
-    if m.list.content <> invalid then n = m.list.content.getChild(m.list.itemFocused)
-    if n <> invalid then log.debug("profiles", "focus", { index: m.list.itemFocused, title: n.title })
-end sub
 
 sub onSelected()
     idx = m.list.itemSelected

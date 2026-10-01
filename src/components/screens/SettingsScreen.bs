@@ -22,11 +22,12 @@ sub init()
     m.tabs.ObserveField("selected", "onTab")
     m.rows.ObserveField("itemSelected", "onSelected")
     m.rows.ObserveField("itemFocused", "onFocused")
-    speakLists([m.rows])
+    speakLists([m.rows], { rows: "rows" })
     ' The description at the right follows the focus: a row's, or the
     ' tab's while the tabs have it.
     onFocusMoves([m.tabs, m.rows], "onFocused")
-    m.focusTarget = m.rows
+    ' Opened from the nav bar, it starts on its first level, the tabs.
+    m.focusTarget = m.tabs
     m.entries = []
     m.top.ObserveField("params", "onParams")
 end sub
@@ -34,10 +35,13 @@ end sub
 sub onParams()
     build()
     ' The player ID can arrive after Settings opens (the lookup at
-    ' startup or linking): show it when it does.
+    ' startup or linking, or the one below): show it when it does.
     if m.watchingSession <> true
         m.global.ObserveFieldScoped("session", "onSession")
         m.watchingSession = true
+        ' MA can have found (or lost) this TV since the profile became
+        ' active, so look again; MainScene says so if it was missing.
+        m.global.playerCheck = "settings"
     end if
 end sub
 
@@ -118,6 +122,7 @@ sub fill(list as object, entries as object)
     root = CreateObject("roSGNode", "ContentNode")
     for each e in entries
         n = root.CreateChild("ContentNode")
+        n.id = e.id
         n.title = e.label
         hint = e.detail
         if e.DoesExist("checked")
@@ -136,11 +141,15 @@ sub fill(list as object, entries as object)
 end sub
 
 ' The shown tab changed (OK on the tabs): its rows, from the first.
+' OK on a tab shows it and goes down to its first row (like the nav
+' bar and Library's tabs).
 sub onTab()
     log.info("settings", "tab", { shown: m.tabs.shown })
     fill(m.rows, [])
     build()
     m.rows.jumpToItem = 0
+    m.focusTarget = m.rows
+    focustrack.set(m.rows)
 end sub
 
 ' Up from the first row goes to the tabs, and on from there to the nav
@@ -150,11 +159,11 @@ function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
     if (key = "up" or key = "back") and m.rows.hasFocus()
         m.focusTarget = m.tabs
-        m.tabs.setFocus(true)
+        focustrack.set(m.tabs)
         return true
     else if key = "down" and m.tabs.isInFocusChain()
         m.focusTarget = m.rows
-        m.rows.setFocus(true)
+        focustrack.set(m.rows)
         return true
     end if
     return false
@@ -231,7 +240,6 @@ sub onFocused()
     e = m.entries[m.rows.itemFocused]
     if e = invalid then return
     m.detail.text = e.detail
-    log.debug("settings", "focus " + e.id)
 end sub
 
 sub onSelected()

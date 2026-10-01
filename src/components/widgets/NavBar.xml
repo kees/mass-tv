@@ -18,6 +18,9 @@
         <field id="aimX" type="float" value="-1" alwaysNotify="true" onChange="onAimX" />
         <!-- Output: the cursor entry's horizontal center on screen. -->
         <field id="cursorX" type="float" value="-1" />
+        <!-- Output: what's under the cursor (focustrack.describe), for MainScene's
+             focus tracker. -->
+        <field id="cursor" type="assocarray" />
     </interface>
     <children>
         <Rectangle id="bar" color="#101418" width="1920" height="96" />

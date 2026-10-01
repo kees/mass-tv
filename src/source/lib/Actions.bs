@@ -39,8 +39,13 @@ namespace actions
         end if
         qid = actions.playerQueueId()
         if qid = ""
-            actions.toast("This TV isn't set up as a Music Assistant player yet.")
-            log.warn("actions", "play without player id", { media: media })
+            ' MA may list this TV by now (its Roku provider can lose and find
+            ' it while running): look again, and send the play if it does
+            ' (MainScene's onPlayers). Keys are lowercase: a node field keeps
+            ' them that way.
+            log.info("actions", "play without player id: looking for the player", { media: media })
+            m.global.playAwaitingPlayer = { item: item, option: option, start: startItem, shuffle: shuffle, sort: sortBy, shown: shown }
+            m.global.playerCheck = "play"
             return
         end if
         args = ma.playMediaArgs(qid, media, option, startItem, shuffle, actions.schema(), sortBy)
@@ -202,6 +207,10 @@ namespace actions
         end if
         if ctx.what = "play" then m.global.playPending = {}
         log.warn("actions", ctx.what + " failed", { status: resp.status, kind: resp.kind, error: resp.error })
+        if ctx.what = "play" and resp.kind <> "network" and resp.kind <> "timeout"
+            ' MA refused it: the player ID may be one MA no longer lists
+            m.global.playerCheck = "play failed"
+        end if
         command = util.str(resp.command, ctx.what)
         if ctx.what = "play" then command = util.str(ctx.command, "player_queues/play_media")
         msg = ma.errorMessage(resp.kind, command, resp.error)

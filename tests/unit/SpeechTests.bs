@@ -1,6 +1,7 @@
 sub speechTests()
     tst.begin("speech")
     tst.eq(speech.clean("Kimiko Ishizaka · 2012"), "Kimiko Ishizaka, 2012", "separator becomes a pause")
+    tst.eq(speech.clean("Test User  ·  Music Assistant (home)"), "Test User, Music Assistant (home)", "a widely spaced separator leaves no space before its comma")
     tst.eq(speech.clean("Name (Z–A)"), "Name (Z to A)", "en dash read as 'to'")
     tst.eq(speech.clean("  a   b  "), "a b", "spaces collapsed and trimmed")
     tst.eq(speech.clean(invalid), "", "no text")

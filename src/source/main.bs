@@ -101,7 +101,12 @@ sub setupGlobals(g as object, args as dynamic)
     g.AddField("player", "node", false)
     g.AddField("toast", "string", true)
     g.AddField("currentScreen", "string", false)
+    ' Bumped by focustrack.set: MainScene's focus tracker looks again.
+    g.AddField("focusCheck", "integer", true)
     g.AddField("pollKick", "boolean", true)
+    ' Set (to why) to have MainScene look for this TV among MA's players
+    ' again: Settings opening, or a play with no player to send it to.
+    g.AddField("playerCheck", "string", true)
     ' Counts removals from the recently played list (a Detail page's More
     ' menu), so Home reloads its row.
     g.AddField("recentChanged", "integer", false)
@@ -134,6 +139,13 @@ sub setupGlobals(g as object, args as dynamic)
         ' Set while a play request is on its way to MA (actions.play), until
         ' MA's stream reaches the player or the request fails.
         playPending: {}
+        ' A play asked for while this TV had no player ID (actions.play's
+        ' arguments), sent once MainScene finds the player.
+        playAwaitingPlayer: {}
+        ' Where Library was left while the app runs ({ tab, letters: { tab
+        ' id: letter } }), so the nav bar opens it there; reset when a
+        ' profile becomes active.
+        libraryPlace: {}
         queueState: {}
         ' The active profile's music sources, provider instance id -> the
         ' name MA gives it (MA's providers, for the source on Detail pages).

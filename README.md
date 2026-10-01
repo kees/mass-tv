@@ -78,6 +78,11 @@ run in the `brs-cli` simulator (brs-node), the end-to-end test against
 `tools/fake_ma.py`, a fake Music Assistant server. No Roku or Music
 Assistant is needed.
 
+The UI's rules are in [docs/ui-idioms.md](docs/ui-idioms.md) (how
+things look and respond to the remote) and
+[docs/ui-flows.md](docs/ui-flows.md) (the screens, how they're reached,
+and what each key does there).
+
 ## Running on a Roku
 
 Mass TV is available on the Roku Channel Store: search for "Mass TV" on

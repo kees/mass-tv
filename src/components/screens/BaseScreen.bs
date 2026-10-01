@@ -8,25 +8,20 @@ import "pkg:/source/lib/Actions.bs"
 import "pkg:/source/lib/Speech.bs"
 import "pkg:/source/lib/Fonts.bs"
 import "pkg:/source/lib/Hints.bs"
+import "pkg:/source/lib/Focus.bs"
 
 ' Shared by every screen. Each screen observes its own `params` field in
 ' init() and sets m.focusTarget to the node that should regain focus.
 
 sub onRestoreFocus()
-    if m.focusTarget <> invalid then m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub
 
-' Every list and grid reports its focused item here, so the log shows where
-' each key press landed.
-sub onFocusedItem()
-    item = m.top.focusedItem
-    tag = "screen"
-    if util.isString(m.logTag) then tag = m.logTag
-    if not util.isAA(item)
-        log.debug(tag, "focus none")
-        return
-    end if
-    log.debug(tag, "focus " + ma.mediaTypeOf(item), { uri: ma.uriOf(item), name: util.get(item, "name") })
+' Down from the nav bar, before the focus arrives: the widget about to
+' take it moves its cursor under the nav cursor now, so the only focus
+' reported is where it lands (a button row, a tab row, a row of cards).
+sub onAimTarget()
+    if m.focusTarget <> invalid and m.top.aimTarget >= 0 then aim.aimInto(m.focusTarget, m.top.aimTarget)
 end sub
 
 sub go(screen as string, params = {} as object)
@@ -81,29 +76,28 @@ end sub
 ' Roku's own reading of lists was uneven on the device (Roku OS 15.3): a
 ' MarkupList skipped each item's title, a grid put its position before
 ' the item's second line, and a RowList named the first row only after
-' a row change. So lists speak through speech.say: a screen passes its
-' lists here once, and each says its focused item when it moves or the
-' list gets focus: the row's name (row lists), the item's title and
-' second line, its place, then any help text ("Recently played, Ashes,
-' Josh Woodward, button 3 of 12").
-sub speakLists(lists as object)
-    if m.listSpoken = invalid then m.listSpoken = {}
-    if m.speechLists = invalid
-        m.speechLists = []
-        ' Focus arriving on a list: a list's own focusedChild didn't
-        ' report it in brs-cli (Home at launch said nothing), the screen's
-        ' does. Both are watched; a repeat isn't said twice.
-        m.top.ObserveFieldScoped("focusedChild", "onScreenFocusSpeech")
-    end if
+' a row change. So lists describe their focused item for the focus
+' tracker (lib/Focus.bs), which says it: a screen passes its lists here
+' once, and each keeps its `cursor` current: the row's name (row lists,
+' said as the cursor enters the row), the item's title and second line,
+' its place, then any help text ("Recently played, Ashes, Josh Woodward,
+' button 3 of 12").
+' widgets: the kind each list's focus moves are logged as, by list id;
+' "items" (things from MA) by default, e.g. { rows: "rows" } for a list
+' of settings.
+sub speakLists(lists as object, widgets = {} as object)
+    if m.listWidgets = invalid then m.listWidgets = {}
+    m.listWidgets.Append(widgets)
     for each list in lists
-        m.speechLists.Push(list)
         list.muteAudioGuide = true
-        list.ObserveFieldScoped("focusedChild", "onListSpeech")
+        if not list.hasField("cursor") then list.AddField("cursor", "assocarray", false)
         if list.subtype() = "RowList"
             list.ObserveFieldScoped("rowItemFocused", "onListSpeech")
         else
             list.ObserveFieldScoped("itemFocused", "onListSpeech")
         end if
+        list.ObserveFieldScoped("content", "onListSpeech")
+        speakList(list)
     end for
 end sub
 
@@ -111,38 +105,22 @@ sub onListSpeech(event as object)
     speakList(event.getRoSGNode())
 end sub
 
-' For a screen moving the focus onto a list itself, where no focus change
-' may reach speakList in between (lists inside a group): says the list's
-' item even if it was the last thing it said.
-sub speakListAfresh(list as object)
-    if m.listSpoken <> invalid then m.listSpoken.Delete(list.id)
-    speakList(list)
-end sub
-
-sub onScreenFocusSpeech()
-    for each list in m.speechLists
-        speakList(list)
-    end for
-end sub
-
-' Says a list's focused item if the list has focus and it's news. Screens
-' also call it when their items arrive (firstOnly: only if nothing was
-' said yet), for a list focused while it was empty. m.listOpenEnded[list
-' id] = true when more items may still load (the position is then "item
-' 7", not "7 of 60").
-sub speakList(list as object, firstOnly = false as boolean)
-    if m.listSpoken = invalid then m.listSpoken = {}
+' Describes a list's focused item in its `cursor` (nothing under it: an
+' empty key). Screens also call it when items arrive or change under the
+' cursor (a placeholder filled in). m.listOpenEnded[list id] = true when
+' more items may still load (the position is then "button 7", not "7 of
+' 60"); m.listLead, when set, is said as the focus arrives on the list
+' (Search's "12 results").
+sub speakList(list as object)
+    if not list.hasField("cursor") then return
     key = list.id
-    if not list.hasFocus()
-        ' Coming back says the row's name (and the item) again.
-        m.listSpoken.Delete(key)
+    content = list.content
+    if content = invalid
+        list.cursor = focustrack.describe(listWidget(list), "", "", {})
         return
     end if
-    content = list.content
-    if content = invalid then return
-    last = m.listSpoken[key]
-    if firstOnly and last <> invalid then return
     rowTitle = ""
+    group = ""
     if list.subtype() = "RowList"
         at = list.rowItemFocused
         ' Before the first move, rowItemFocused can be empty (brs-cli):
@@ -153,15 +131,21 @@ sub speakList(list as object, firstOnly = false as boolean)
             at = [r, 0]
         end if
         rowNode = content.getChild(at[0])
-        if rowNode = invalid then return
-        item = rowNode.getChild(at[1])
+        item = invalid
+        if rowNode <> invalid then item = rowNode.getChild(at[1])
         index = at[1]
-        total = rowNode.getChildCount()
-        ' The row's name when the list gets focus or the row changes.
-        if last = invalid or last.row <> at[0] then rowTitle = util.str(rowNode.title, "")
+        total = 0
+        if rowNode <> invalid
+            total = rowNode.getChildCount()
+            rowTitle = util.str(rowNode.title, "")
+        end if
         row = at[0]
+        group = row.ToStr()
     else
         index = list.itemFocused
+        ' A list focused while empty reports no cursor (-1) once its items
+        ' arrive, though the cursor is drawn on the first.
+        if not util.isInteger(index) or index < 0 then index = 0
         item = content.getChild(index)
         total = content.getChildCount()
         ' A list whose content holds fewer items than it has (Library's
@@ -169,7 +153,10 @@ sub speakList(list as object, firstOnly = false as boolean)
         if util.isAA(m.listTotal) and util.isInteger(m.listTotal[key]) and m.listTotal[key] > 0 then total = m.listTotal[key]
         row = 0
     end if
-    if item = invalid then return
+    if item = invalid
+        list.cursor = focustrack.describe(listWidget(list), "", "", {})
+        return
+    end if
     second = ""
     if item.hasField("AUDIO_GUIDE_SUFFIX") then second = util.str(item.AUDIO_GUIDE_SUFFIX, "")
     if second = "" then second = util.str(item.description, "")
@@ -182,19 +169,33 @@ sub speakList(list as object, firstOnly = false as boolean)
     hint = ""
     if item.hasField("speechHint") then hint = util.str(item.speechHint, "")
     itemText = speech.join([item.title, second, chosen, place, hint])
-    ' The same item said the same way isn't said again (a RowList reports
-    ' its first item twice as it settles; the second, without the row's
-    ' name, would cut the first off).
-    if last <> invalid and last.row = row and last.index = index and last.itemText = itemText then return
-    m.listSpoken[key] = { itemText: itemText, row: row, index: index }
-    text = speech.join([rowTitle, itemText])
-    ' A screen's one-time lead-in (e.g. Search's "12 results").
-    if util.isNonEmptyString(m.listLead)
-        text = speech.join([m.listLead, text])
-        m.listLead = ""
-    end if
-    speech.say(text)
+    lead = ""
+    if util.isNonEmptyString(m.listLead) then lead = m.listLead
+    list.cursor = focustrack.describe(listWidget(list), row.ToStr() + "|" + index.ToStr(), itemText, listFocusData(item, row, index, list.subtype() = "RowList"), lead, group, rowTitle)
 end sub
+
+function listWidget(list as object) as string
+    if util.isAA(m.listWidgets) and util.isString(m.listWidgets[list.id]) then return m.listWidgets[list.id]
+    return "items"
+end function
+
+' What the focus log says about a list item: its place, its id and title,
+' and for an item from MA (a queue row's track included) its type, uri,
+' and name.
+function listFocusData(item as object, row as integer, index as integer, inRows as boolean) as object
+    data = { index: index, label: util.str(item.title, "") }
+    if inRows then data.row = row
+    if util.isNonEmptyString(item.id) then data.id = item.id
+    mi = invalid
+    if item.hasField("item") then mi = item.item
+    if util.isAA(mi) and util.isAA(util.get(mi, "media_item")) then mi = mi.media_item
+    if util.isAA(mi)
+        data.kind = ma.mediaTypeOf(mi)
+        data.uri = ma.uriOf(mi)
+        data.name = util.get(mi, "name")
+    end if
+    return data
+end function
 
 ' --- item options (the More button on Detail pages and Now Playing) ---
 
@@ -313,7 +314,7 @@ sub onItemOption(index as integer)
     else if id = "artist" or id = "album"
         viewOption(item, id)
     else if id = "about"
-        showTextPanel(ma.titleOf(item), ma.descriptionOf(item))
+        showTextPanel(ma.titleOf(item), ma.descriptionOf(item, true))
     end if
 end sub
 
@@ -411,7 +412,7 @@ end sub
 sub closeMenu()
     if m.choiceMenu = invalid then return
     dropMenu()
-    if m.focusTarget <> invalid then m.focusTarget.setFocus(true)
+    focustrack.set(m.focusTarget)
 end sub
 
 ' Removes the menu without refocusing this screen.

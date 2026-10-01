@@ -2,6 +2,8 @@ import "pkg:/source/lib/Util.bs"
 import "pkg:/source/lib/Log.bs"
 import "pkg:/source/lib/Speech.bs"
 import "pkg:/source/lib/Fonts.bs"
+import "pkg:/source/lib/Keys.bs"
+import "pkg:/source/lib/Focus.bs"
 
 ' Panel padding, the row height, and the rows' text inset (MenuRow).
 const PAD = 40
@@ -19,15 +21,15 @@ sub init()
     m.probe = m.top.findNode("probe")
     m.list.ObserveField("itemSelected", "onItemSelected")
     m.list.ObserveField("itemFocused", "onItemFocused")
-    ' The menu speaks its rows itself (speakRow), so its title can go
-    ' first when it opens.
+    ' The menu is spoken from its `cursor` (MainScene's focus tracker), so
+    ' its title can go first when it opens.
     m.list.muteAudioGuide = true
-    m.spoken = ""
 end sub
 
 sub onTitle()
     fonts.label(m.titleLabel, m.top.title, true)
     layout()
+    describeCursor()
 end sub
 
 ' Same number of items: relabel in place, so focus stays put (e.g. a
@@ -53,8 +55,9 @@ sub onItems()
         n.chosen = util.isArray(chosen) and i < chosen.Count() and chosen[i] = true
     end for
     layout()
-    ' A label or switch changing under the cursor is said again.
-    if m.list.hasFocus() and rowSpeech(m.list.itemFocused) <> m.spoken then speakRow(false)
+    ' A label or switch changing under the cursor is said again (the same
+    ' place, new words).
+    describeCursor()
 end sub
 
 ' Sizes the panel to its widest label (or the title, or a size hint: a
@@ -93,11 +96,17 @@ end sub
 
 sub onActive()
     if not m.top.active then return
-    ' Taking focus reports the focused row; it's said with the title.
-    m.spoken = rowSpeech(m.list.itemFocused)
-    m.list.setFocus(true)
-    speakRow(true)
+    ' The focus arriving reports the focused row, with the title first.
+    describeCursor()
+    focustrack.set(m.list)
 end sub
+
+' The focused row (the first until the list reports one).
+function cursorRow() as integer
+    i = m.list.itemFocused
+    if not util.isInteger(i) or i < 0 then return 0
+    return i
+end function
 
 ' A row as the screen reader says it, like the screens' lists: "Name (A
 ' to Z), selected, button 1 of 6".
@@ -111,12 +120,14 @@ function rowSpeech(i as integer) as string
     return speech.join(parts)
 end function
 
-' withTitle: the menu just opened, so its title goes first.
-sub speakRow(withTitle as boolean)
-    m.spoken = rowSpeech(m.list.itemFocused)
-    text = m.spoken
-    if withTitle then text = speech.join([m.top.title, "menu", text])
-    speech.say(text)
+' The focused row, for the focus tracker, with the menu's title as its
+' context (said as the menu opens).
+sub describeCursor()
+    i = cursorRow()
+    key = ""
+    items = m.top.items
+    if util.isArray(items) and i < items.Count() then key = i.ToStr()
+    m.top.cursor = focustrack.describe("menu", key, rowSpeech(i), { index: i, label: labelAt(i) }, speech.join([m.top.title, "menu"]))
 end sub
 
 sub onItemSelected()
@@ -125,9 +136,7 @@ sub onItemSelected()
 end sub
 
 sub onItemFocused()
-    log.debug("menu", "focus", { index: m.list.itemFocused, label: labelAt(m.list.itemFocused) })
-    ' (Not the row just said, e.g. with the title as the menu opened.)
-    if m.list.hasFocus() and rowSpeech(m.list.itemFocused) <> m.spoken then speakRow(false)
+    describeCursor()
 end sub
 
 function labelAt(i as integer) as string
@@ -137,9 +146,11 @@ function labelAt(i as integer) as string
 end function
 
 ' The list moves the focus itself; at either end it lets Up or Down
-' through, and the menu wraps around. Every other key stops here too, so
-' nothing behind the menu reacts while it shows.
+' through, and the menu wraps around. The playback keys (Play/Pause,
+' rewind, fast forward, replay) go on to the scene, as everywhere; every
+' other key stops here, so nothing behind the menu reacts while it shows.
 function onKeyEvent(key as string, press as boolean) as boolean
+    if keys.isGlobal(key) then return false
     if not press then return true
     n = 0
     if m.list.content <> invalid then n = m.list.content.getChildCount()

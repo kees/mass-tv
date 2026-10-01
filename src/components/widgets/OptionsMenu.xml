@@ -24,6 +24,9 @@
         <field id="active" type="boolean" onChange="onActive" />
         <field id="selected" type="integer" alwaysNotify="true" />
         <field id="closed" type="boolean" alwaysNotify="true" />
+        <!-- Output: what's under the cursor (focustrack.describe), for MainScene's
+             focus tracker. -->
+        <field id="cursor" type="assocarray" />
     </interface>
     <children>
         <!-- Darker than a Roku dialog, so the gray focus pill stands out. -->

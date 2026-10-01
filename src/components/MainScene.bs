@@ -10,6 +10,8 @@ import "pkg:/source/lib/Actions.bs"
 import "pkg:/source/lib/DeepLink.bs"
 import "pkg:/source/lib/Aim.bs"
 import "pkg:/source/lib/Lru.bs"
+import "pkg:/source/lib/Focus.bs"
+import "pkg:/source/lib/Speech.bs"
 
 const LOG_PULL_PORT = 8889
 
@@ -33,6 +35,7 @@ sub init()
     m.holdTimer = m.top.findNode("holdTimer")
     m.holdTimer.duration = keys.HOLD_MS / 1000
     m.holdTimer.ObserveField("fire", "onHoldTimer")
+    initFocusTracker()
     m.seekTarget = -1
     ' Launch beacons (Roku certification 3.2): see updateLaunchBeacons.
     m.launchBeaconSent = false
@@ -68,6 +71,10 @@ sub init()
     m.kickTimer = m.top.findNode("kickTimer")
     m.kickTimer.ObserveField("fire", "poll")
     m.global.ObserveFieldScoped("pollKick", "kickPoll")
+    m.global.ObserveFieldScoped("playerCheck", "onPlayerCheck")
+    ' Whether the last look among MA's players didn't find this TV, so
+    ' finding it again can say so.
+    m.playerMissing = false
     m.lastQueueItemId = ""
     m.maOnline = true
     m.reconnectTimer = m.top.findNode("reconnectTimer")
@@ -122,7 +129,12 @@ sub handleDeepLinkParams(params as dynamic, atLaunch as boolean)
     if not util.isAA(params) then return
     applyDebugParams(params)
     if params.DoesExist("u") or params.DoesExist("contentId") or params.DoesExist("contentid") or params.DoesExist("t") or params.DoesExist("a")
-        if atLaunch and util.isNonEmptyString(params.u) and params.u.Trim() <> "" then m.launchedForPlayback = true
+        if atLaunch and util.isNonEmptyString(params.u) and params.u.Trim() <> ""
+            m.launchedForPlayback = true
+            ' The first profile to become active opens Now Playing; later
+            ' ones (Switch profile, a new link) open Home as usual.
+            m.nowPlayingOnActivate = true
+        end if
         m.player.deeplink = params
         if atLaunch = false and isLinkScreen(currentScreenName())
             ' Playback can start before linking finishes; that's fine.
@@ -304,10 +316,15 @@ sub activateProfile(p as object)
     if days <> invalid and days < 0 then actions.toast("This profile's link has expired. Link it again in Settings.")
     apic.getPath("/info", onServerInfo)
     apic.call("time", {}, onServerTime, { sentAt: util.nowMs() }, { noAuth: true })
+    m.playerMissing = false
+    m.global.playAwaitingPlayer = {}
+    ' Library starts on its first tab and All for each profile.
+    m.global.libraryPlace = {}
     apic.call("players/all", {}, onPlayers)
     m.global.musicSources = {}
     apic.call("providers", { provider_type: "music" }, onMusicSources)
-    if m.launchedForPlayback
+    if m.nowPlayingOnActivate = true
+        m.nowPlayingOnActivate = false
         showRoot("nowplaying", {})
     else
         showRoot("home", {})
@@ -411,13 +428,29 @@ sub onMusicSources(resp as object, ctx as dynamic)
     log.debug("scene", "music sources", m.global.musicSources)
 end sub
 
+' Looks for this TV among MA's players again (m.global.playerCheck says
+' why): MA can lose and find its Rokus while running, e.g. when its Roku
+' provider reloads.
+sub onPlayerCheck()
+    if util.str(util.get(m.global.session, "token"), "") = "" then return
+    reason = m.global.playerCheck
+    log.debug("scene", "looking for this TV among MA's players", { reason: reason })
+    apic.call("players/all", {}, onPlayers, { reason: reason })
+end sub
+
 sub onPlayers(resp as object, ctx as dynamic)
-    if not resp.ok then return
+    awaiting = m.global.playAwaitingPlayer
+    if not resp.ok
+        ' the request's failure already says MA is unreachable
+        if util.isAA(awaiting) and awaiting.Count() > 0 then m.global.playAwaitingPlayer = {}
+        return
+    end if
     dev = m.global.device
     p = ma.findRokuPlayer(resp.data, dev.ips, util.str(dev.name, ""))
     session = m.global.session
     if p = invalid
         log.warn("scene", "this Roku is not an MA player yet (add MA's Media Assistant (Roku) provider with this app id)", { appId: util.getPath(m.global, "device.appId"), myIps: dev.ips, players: ma.playerSummary(resp.data) })
+        m.playerMissing = true
         ' A saved player ID this server doesn't list is stale (e.g. another
         ' server's): sending it only gets errors. Without one, a play says
         ' this TV isn't a player yet, and MA's next stream teaches the ID.
@@ -428,6 +461,10 @@ sub onPlayers(resp as object, ctx as dynamic)
             m.global.session = session
             store.setPlayerIdFor(util.str(session.server, ""), "")
         end if
+        if util.isAA(awaiting) and awaiting.Count() > 0
+            m.global.playAwaitingPlayer = {}
+            actions.toast("This TV isn't set up as a Music Assistant player yet.")
+        end if
         return
     end if
     if session.playerId <> p.player_id
@@ -435,7 +472,16 @@ sub onPlayers(resp as object, ctx as dynamic)
         m.global.session = session
         store.setPlayerIdFor(session.server, p.player_id)
     end if
-    log.info("scene", "this Roku is MA player " + p.player_id)
+    log.info("scene", "this Roku is MA player " + p.player_id, { reason: util.get(ctx, "reason") })
+    if m.playerMissing
+        m.playerMissing = false
+        actions.toast("Reconnected to Music Assistant")
+    end if
+    if util.isAA(awaiting) and awaiting.Count() > 0
+        m.global.playAwaitingPlayer = {}
+        log.info("scene", "sending the play that waited for the player")
+        actions.play(awaiting.item, util.str(awaiting.option, "replace"), util.str(awaiting.start, ""), awaiting.shuffle = true, util.str(awaiting.sort, ""), awaiting.shown)
+    end if
 end sub
 
 ' The stream hosts the player accepts ("Only play streams from this
@@ -507,8 +553,10 @@ sub pushScreen(name as string, params as object)
     if s.hasField("focusedItem") then s.ObserveField("focusedItem", "onFocusedItemMoved")
     m.screens.appendChild(s)
     m.stack.Push(s)
+    ' Before its first focus logs, which name the screen.
+    m.global.currentScreen = name
     s.params = params
-    s.setFocus(true)
+    focustrack.set(s)
     s.restoreFocus = true
     log.info("scene", "screen " + name, { depth: m.stack.Count() })
     afterScreenChange()
@@ -519,7 +567,8 @@ sub popScreen()
     removeScreen(m.stack.Pop())
     top = currentScreen()
     top.visible = true
-    top.setFocus(true)
+    m.global.currentScreen = top.screenName
+    focustrack.set(top)
     top.restoreFocus = true
     log.info("scene", "back to " + top.screenName)
     afterScreenChange()
@@ -539,8 +588,17 @@ sub afterScreenChange()
     ' Signed out, the nav bar's screens have nothing to show.
     chrome = not isLinkScreen(name) and signedIn()
     m.nav.visible = chrome
+    ' The bar marks the nav screen shown, or the one beneath a screen
+    ' opened on top (an album's page over Home stays Home's), never one
+    ' that has closed.
     navIds = { home: "home", library: "library", browse: "browse", search: "search", nowplaying: "nowplaying", queue: "queue", settings: "settings" }
-    if navIds.DoesExist(name) then m.nav.current = name
+    for i = m.stack.Count() - 1 to 0 step -1
+        sname = m.stack[i].screenName
+        if navIds.DoesExist(sname)
+            m.nav.current = sname
+            exit for
+        end if
+    end for
     m.npBar.enabled = chrome and name <> "nowplaying"
     updateKeyHint()
     updatePolling()
@@ -1000,6 +1058,93 @@ sub clearSeekPreview()
     if top <> invalid and top.hasField("seekPreview") then top.seekPreview = -1
 end sub
 
+' --- the focus tracker (lib/Focus.bs) ---
+' Follows the focused widget's `cursor` description and reports for every
+' widget the same way: a move is said and logged once the focus settles,
+' new words at the same place are only said, and a widget's context is
+' said when the focus arrives on it.
+
+sub initFocusTracker()
+    m.tracked = invalid
+    m.trackedAway = false
+    m.trackedKey = ""
+    m.trackedText = ""
+    m.trackedGroup = ""
+    m.focusTimer = m.top.findNode("focusTimer")
+    m.focusTimer.ObserveField("fire", "reportFocus")
+    m.global.ObserveField("focusCheck", "onFocusMaybeMoved")
+end sub
+
+sub onFocusMaybeMoved()
+    m.focusTimer.control = "stop"
+    m.focusTimer.control = "start"
+end sub
+
+' The nearest node at or above the focused one that describes a cursor.
+function cursorOwner() as dynamic
+    n = aim.focusedLeaf(m.top)
+    for i = 0 to 40
+        if n = invalid or n.isSameNode(m.top) then return invalid
+        if n.hasField("cursor") then return n
+        n = n.getParent()
+    end for
+    return invalid
+end function
+
+sub reportFocus()
+    owner = cursorOwner()
+    if owner = invalid
+        ' On nothing that describes a cursor (a dialog, Now Playing's
+        ' ambient view): the last widget stays watched, for the focus
+        ' coming back to it.
+        m.trackedAway = true
+        return
+    end if
+    arrival = false
+    if m.tracked = invalid or not owner.isSameNode(m.tracked)
+        ' Scoped: UnobserveField would also remove the widget's own
+        ' observers of the field (its focusedChild draws its focus ring).
+        if m.tracked <> invalid
+            m.tracked.UnobserveFieldScoped("cursor")
+            m.tracked.UnobserveFieldScoped("focusedChild")
+        end if
+        m.tracked = owner
+        owner.ObserveFieldScoped("cursor", "onFocusMaybeMoved")
+        owner.ObserveFieldScoped("focusedChild", "onFocusMaybeMoved")
+        arrival = true
+    else if m.trackedAway
+        arrival = true
+    end if
+    m.trackedAway = false
+    if arrival
+        m.trackedKey = ""
+        m.trackedText = ""
+        m.trackedGroup = ""
+    end if
+    c = owner.cursor
+    if not util.isAA(c) then return
+    key = util.str(c.key, "")
+    text = util.str(c.text, "")
+    ' Nothing under the cursor yet (a list still loading): the move is
+    ' reported when something is.
+    if key = "" then return
+    group = util.str(c.group, "")
+    if arrival or key <> m.trackedKey or group <> m.trackedGroup
+        parts = []
+        if arrival or m.trackedKey = "" then parts.Push(util.str(c.context, ""))
+        if group <> m.trackedGroup then parts.Push(util.str(c.groupName, ""))
+        parts.Push(text)
+        data = {}
+        if util.isAA(c.data) then data.Append(c.data)
+        speech.focused(util.str(c.widget, "widget"), data, speech.join(parts))
+    else if text <> m.trackedText
+        speech.say(text)
+    end if
+    m.trackedKey = key
+    m.trackedText = text
+    m.trackedGroup = group
+end sub
+
 ' --- keys ---
 
 ' The horizontal center of the cursor on screen `top` (lib/Aim.bs), or -1.
@@ -1035,7 +1180,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         if top <> invalid and top.hasField("focusX") then x = top.focusX
         if x < 0 then x = cursorCenterX(top)
         m.nav.aimX = x
-        m.nav.setFocus(true)
+        focustrack.set(m.nav)
         return true
     end if
     ' A grid refused Down (the row below is shorter): go to its closest card.
@@ -1048,7 +1193,8 @@ function onKeyEvent(key as string, press as boolean) as boolean
             ' A screen may aim itself (Library's tab row); then the widget
             ' that has the focus moves to the item below the nav cursor.
             if top.hasField("aimX") then top.aimX = m.nav.cursorX
-            top.setFocus(true)
+            if top.hasField("aimTarget") then top.aimTarget = m.nav.cursorX
+            focustrack.set(top)
             top.restoreFocus = true
             aim.aimInto(aim.focusedLeaf(top), m.nav.cursorX)
         end if
@@ -1068,7 +1214,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
         if not onNav and m.nav.visible
             log.debug("scene", "back to the nav bar", { screen: name })
             m.nav.aimX = -1
-            m.nav.setFocus(true)
+            focustrack.set(m.nav)
             return true
         end if
         if name <> "home" and not isLinkScreen(name)
@@ -1076,7 +1222,7 @@ function onKeyEvent(key as string, press as boolean) as boolean
             ' Still on the nav bar, now on Home's entry.
             if onNav and m.nav.visible
                 m.nav.aimX = -1
-                m.nav.setFocus(true)
+                focustrack.set(m.nav)
             end if
             return true
         end if
@@ -1253,7 +1399,7 @@ end sub
 sub onDialogClosed()
     top = currentScreen()
     if top <> invalid
-        top.setFocus(true)
+        focustrack.set(top)
         top.restoreFocus = true
     end if
 end sub

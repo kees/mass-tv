@@ -25,7 +25,10 @@
                      button. -->
 <component name="ButtonRow" extends="Group">
     <interface>
-        <field id="context" type="string" />
+        <field id="context" type="string" onChange="render" />
+        <!-- Output: what's under the cursor (focustrack.describe), for MainScene's
+             focus tracker. -->
+        <field id="cursor" type="assocarray" />
         <field id="buttons" type="array" onChange="rebuild" />
         <field id="sizeHints" type="array" onChange="rebuild" />
         <field id="active" type="array" onChange="render" />

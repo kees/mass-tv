@@ -2,6 +2,7 @@ import "pkg:/source/lib/Util.bs"
 import "pkg:/source/lib/Log.bs"
 import "pkg:/source/lib/FocusRing.bs"
 import "pkg:/source/lib/Speech.bs"
+import "pkg:/source/lib/Focus.bs"
 
 const BUTTON_HEIGHT = 84
 ' Text inset in each pill: 24 keeps Now Playing's seven buttons inside
@@ -18,36 +19,15 @@ sub init()
     m.row = m.top.findNode("row")
     m.ring = m.top.findNode("ring")
     m.measure = m.top.findNode("measure")
-    m.top.ObserveField("focusedChild", "onFocusChange")
+    m.top.ObserveField("focusedChild", "render")
     m.items = []
-    m.hadFocus = false
-    ' What the screen reader last said for the focused button.
-    m.spoken = ""
-    ' The row speaks for itself (speech.say): Roku would read every label.
+    ' The row is spoken from its `cursor` (MainScene's focus tracker):
+    ' Roku would read every label.
     m.top.muteAudioGuide = true
 end sub
 
-sub onFocusChange()
-    focused = m.top.hasFocus()
-    if focused and not m.hadFocus
-        logFocus()
-        speakFocused(true)
-    end if
-    m.hadFocus = focused
-    render()
-end sub
-
 sub onFocusIndex()
-    if m.top.hasFocus()
-        logFocus()
-        speakFocused(false)
-    end if
     render()
-end sub
-
-sub logFocus()
-    i = m.top.focusIndex
-    log.debug("buttons", "focus", { index: i, label: labelAt(i) })
 end sub
 
 function labelAt(i as integer) as string
@@ -73,20 +53,15 @@ function focusedSpeech() as string
     return speech.join(parts)
 end function
 
-' withContext: the row just got focus, so the screen's context goes first.
-sub speakFocused(withContext as boolean)
-    m.spoken = focusedSpeech()
-    text = m.spoken
-    if withContext then text = speech.join([m.top.context, text])
-    speech.say(text)
-end sub
-
-' A label or switch changing under the cursor (Play to Pause, Shuffle on)
-' is said again; the rest of the row is left alone.
-sub speakIfChanged()
-    if not m.top.hasFocus() then return
-    now = focusedSpeech()
-    if now <> m.spoken then speakFocused(false)
+' What's under the cursor, for the focus tracker: the button, with the
+' screen's context for when the focus arrives. A label or switch changing
+' under the cursor (Play to Pause, Shuffle on) keeps its place, so it's
+' said again without counting as a move.
+sub describeCursor()
+    i = m.top.focusIndex
+    key = ""
+    if i >= 0 and i < m.items.Count() then key = i.ToStr()
+    m.top.cursor = focustrack.describe("buttons", key, focusedSpeech(), { index: i, label: labelAt(i) }, m.top.context)
 end sub
 
 sub rebuild()
@@ -194,7 +169,8 @@ sub render()
             it.label.color = focusring.PILL_TEXT
         end if
     end for
-    speakIfChanged()
+    focusring.logShown("buttons", m.ring.visible)
+    describeCursor()
 end sub
 
 function isDisabled(i as integer) as boolean

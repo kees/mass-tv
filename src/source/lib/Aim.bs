@@ -1,5 +1,6 @@
 import "pkg:/source/lib/Util.bs"
 import "pkg:/source/lib/Log.bs"
+import "pkg:/source/lib/Focus.bs"
 
 ' Where the cursor is on screen, for aiming Up into the nav bar at the
 ' entry most directly above it (ui-idioms, "Aiming between rows"), worked
@@ -11,6 +12,7 @@ import "pkg:/source/lib/Log.bs"
 '   that, so aim.trackRowList follows it (a row scrolls only when the
 '   cursor would pass its last or first fully visible card);
 ' - ButtonRow: its focused button (a real node, measured);
+' - TabRow: its cursor's tab (the row reports its center);
 ' - MarkupList/LabelList and anything else: none (full-width rows have
 '   nothing in particular above them).
 ' List items can't be measured directly: Roku draws them through internal
@@ -44,6 +46,9 @@ namespace aim
             b = aim.buttonAt(leaf, leaf.focusIndex)
             if b = invalid then return -1
             return aim.sceneX(b) + b.getChild(0).width / 2
+        else if kind = "TabRow"
+            if leaf.cursorX < 0 then return -1
+            return aim.sceneX(leaf) + leaf.cursorX
         end if
         return -1
     end function
@@ -62,7 +67,11 @@ namespace aim
     ' above or below the cursor that was left.
     sub moveFocus(fromWidget as object, toWidget as object)
         x = aim.widgetCenterX(aim.focusedLeaf(fromWidget))
-        toWidget.setFocus(true)
+        ' Aimed before the focus arrives, so it lands once, where aimed
+        ' (not first on the widget's old cursor); then again for a widget
+        ' inside a group, which only the focus reveals.
+        aim.aimInto(toWidget, x)
+        focustrack.set(toWidget)
         aim.aimInto(aim.focusedLeaf(toWidget), x)
     end sub
 
@@ -185,7 +194,8 @@ namespace aim
 
     ' Down from the nav bar: moves the focused widget's cursor to the item
     ' most directly below screen x (the nav cursor's center): the card of
-    ' a card row or grid under it (keeping the row), or the nearest button.
+    ' a card row or grid under it (keeping the row), or the nearest button
+    ' or tab.
     ' Full-width lists keep their cursor.
     sub aimInto(leaf as object, x as float)
         if x < 0 then return
@@ -230,6 +240,9 @@ namespace aim
             end for
             log.debug("aim", "down into buttons", { x: x, index: best })
             if best >= 0 and best <> leaf.focusIndex then leaf.focusIndex = best
+        else if kind = "TabRow"
+            log.debug("aim", "down into tabs", { x: x })
+            leaf.aimAt = x - aim.sceneX(leaf)
         end if
     end sub
 

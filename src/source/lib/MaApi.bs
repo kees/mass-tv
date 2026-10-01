@@ -610,16 +610,20 @@ namespace ma
         return false
     end function
 
-    ' An item's description as one paragraph of plain text, or "" if it
-    ' has none: metadata.description (an artist's biography, an album's
-    ' summary, from the music source or a metadata provider such as
-    ' TheAudioDB), except that an album's review comes first, as in MA's
-    ' web UI.
-    function descriptionOf(item as dynamic) as string
-        text = ""
-        if ma.mediaTypeOf(item) = "album" then text = util.str(util.getPath(item, "metadata.review"), "")
-        if text = "" then text = util.str(util.getPath(item, "metadata.description"), "")
-        return ma.plainText(text)
+    ' An item's description as plain text, or "" if it has none:
+    ' metadata.description (an artist's biography, an album's summary,
+    ' from the music source or a metadata provider such as TheAudioDB),
+    ' then for an album its review (metadata.review, a critic's or user's
+    ' take) when it has one. paragraphs: a blank line between the two (the
+    ' text panel); else a space (a short preview).
+    function descriptionOf(item as dynamic, paragraphs = false as boolean) as string
+        desc = ma.plainText(util.str(util.getPath(item, "metadata.description"), ""))
+        if ma.mediaTypeOf(item) <> "album" then return desc
+        review = ma.plainText(util.str(util.getPath(item, "metadata.review"), ""))
+        if review = "" or review = desc then return desc
+        if desc = "" then return review
+        if paragraphs then return desc + Chr(10) + Chr(10) + review
+        return desc + " " + review
     end function
 
     ' MA's web UI renders descriptions as Markdown (and they may carry

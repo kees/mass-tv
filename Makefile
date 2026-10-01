@@ -92,8 +92,10 @@ unit: $(ASSETS)
 	cd build/unit && ../../$(BRS) source/bslib.brs source/lib/*.brs source/tests/*.brs | tee ../unit.log
 	grep -q "UNIT_RESULT=PASS" build/unit.log
 
+# E2E_STOP: end the run after the first check whose name contains it, e.g.
+# make e2e E2E_STOP="first playlist".
 e2e: zip
-	$(PY) tools/e2e_sim.py --zip out/masstv-debug.zip
+	$(PY) tools/e2e_sim.py --zip out/masstv-debug.zip $(if $(E2E_STOP),--stop-after "$(E2E_STOP)")
 
 check: lint unit e2e
 

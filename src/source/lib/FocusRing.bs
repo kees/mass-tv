@@ -1,4 +1,5 @@
 import "pkg:/source/lib/Util.bs"
+import "pkg:/source/lib/Log.bs"
 
 ' The focus highlight for rows of text (nav bar, Library tabs, button
 ' rows): a Poster showing pkg:/images/focus_ring.9.png, a rounded
@@ -41,6 +42,16 @@ namespace focusring
         ring.width = w + 2 * focusring.PAD_X
         ring.height = h + 2 * focusring.PAD_Y
         ring.visible = true
+    end sub
+
+    ' Logs (DEBUG, category "ring", the widget kind as the message) when a
+    ' widget's focus ring appears or goes away, so tests can check that
+    ' the ring follows the focus: one widget's ring, where the focus is.
+    ' Call it at the end of the widget's drawing.
+    sub logShown(widget as string, shown as boolean)
+        if m.ringShown <> invalid and m.ringShown = shown then return
+        m.ringShown = shown
+        log.debug("ring", widget, { shown: shown })
     end sub
 
 end namespace

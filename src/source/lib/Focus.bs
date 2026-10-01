@@ -1,0 +1,48 @@
+import "pkg:/source/lib/Util.bs"
+
+' Where the focus is, reported from one place.
+'
+' Every focusable widget describes what's under its cursor in a `cursor`
+' field (focustrack.describe), and keeps it current as its cursor moves or what
+' it shows changes; it never speaks or logs its own focus. Every change of
+' which node has the focus goes through focustrack.set. MainScene's focus
+' tracker follows the focused widget's `cursor` and decides, once for every
+' widget: a move (another widget, or another place in it) is said and
+' logged (speech.focused), with the widget's context when the focus
+' arrives on it and a group's name when the cursor enters another group
+' (a row of cards); new words at the same place are only said; nothing
+' under a cursor, or no focus, reports nothing.
+' (Not "focus": screens use that as a variable name.)
+namespace focustrack
+
+    ' Gives node the focus and has the tracker look again.
+    sub set(node as dynamic)
+        if node = invalid then return
+        node.setFocus(true)
+        focustrack.changed()
+    end sub
+
+    ' The focus may have moved without a widget's `cursor` changing (a
+    ' dialog closed, a screen pushed): the tracker looks again.
+    sub changed()
+        g = m.global
+        if type(g) = "roSGNode" and g.hasField("focusCheck") then g.focusCheck = g.focusCheck + 1
+    end sub
+
+    ' What a widget publishes in its `cursor` field.
+    ' widget: the kind, as logged (nav, buttons, tabs, letters, menu, rows,
+    '   items, tracks, lines, servers, address).
+    ' key: the cursor's place in the widget ("" when nothing is under it);
+    '   another key is a move.
+    ' text: what the screen reader says for it ("Shuffle, on, button 2 of
+    '   5").
+    ' data: what the focus log records (index, id, label, kind, uri, name).
+    ' context: said first when the focus arrives on the widget (a page's
+    '   title, "Letters", a menu's title).
+    ' group/groupName: the part of the widget the cursor is in (a row of
+    '   cards) and its name, said when the cursor enters it.
+    function describe(widget as string, key as string, text as string, data as object, context = "" as string, group = "" as string, groupName = "" as string) as object
+        return { widget: widget, key: key, text: text, data: data, context: context, group: group, groupName: groupName }
+    end function
+
+end namespace

@@ -2,16 +2,25 @@
 <!-- A row of tabs, drawn like Library's: text labels, the shown tab blue
      (the "selected" idiom), the cursor white in the focus ring while the
      row has focus. Left/Right move the cursor, OK shows its tab (tab-like
-     rows switch on OK); Up/Down aren't consumed.
+     rows switch on OK), wrapping at the ends; Up/Down aren't consumed.
 
      tabs      array of labels
      shown     the shown tab (input and output)
-     selected  output: the tab just shown with OK (alwaysNotify) -->
+     selected  output: the tab just shown with OK (alwaysNotify)
+     cursorX   output: the cursor tab's horizontal center in the row's
+               coordinates (-1 without tabs), for aiming Up
+     aimAt     input: x in the row's coordinates; puts the cursor on the
+               nearest tab (Down from the nav bar) instead of the shown one -->
 <component name="TabRow" extends="Group">
     <interface>
         <field id="tabs" type="array" onChange="rebuild" />
         <field id="shown" type="integer" value="0" onChange="render" />
         <field id="selected" type="integer" alwaysNotify="true" />
+        <field id="cursorX" type="float" value="-1" />
+        <field id="aimAt" type="float" alwaysNotify="true" onChange="onAimAt" />
+        <!-- Output: what's under the cursor (focustrack.describe), for MainScene's
+             focus tracker. -->
+        <field id="cursor" type="assocarray" />
     </interface>
     <children>
         <Poster id="ring" uri="pkg:/images/focus_ring.9.png" visible="false" />

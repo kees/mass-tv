@@ -2,6 +2,7 @@ import "pkg:/source/lib/Util.bs"
 import "pkg:/source/lib/Log.bs"
 import "pkg:/source/lib/FocusRing.bs"
 import "pkg:/source/lib/Speech.bs"
+import "pkg:/source/lib/Focus.bs"
 
 const TAB_SPACING = 56
 
@@ -11,8 +12,9 @@ sub init()
     m.boxes = []
     m.cursor = 0
     m.hadFocus = false
-    m.spoken = ""
-    ' The row speaks for itself ("Profile, tab 1 of 2, shown").
+    m.aimed = false
+    ' Spoken from its `cursor` (MainScene's focus tracker): "Profile, tab
+    ' 1 of 2, shown".
     m.top.muteAudioGuide = true
     m.top.ObserveField("focusedChild", "onFocusChange")
 end sub
@@ -34,11 +36,26 @@ sub rebuild()
     render()
 end sub
 
-' Focus arriving puts the cursor on the shown tab.
+' Focus arriving puts the cursor on the shown tab, unless it arrived
+' aimed (aimAt, whichever of the two is handled first).
 sub onFocusChange()
     focused = m.top.hasFocus()
-    if focused and not m.hadFocus then m.cursor = m.top.shown
+    if focused and not m.hadFocus and not m.aimed then m.cursor = m.top.shown
+    if not focused then m.aimed = false
     m.hadFocus = focused
+    render()
+end sub
+
+sub onAimAt()
+    x = m.top.aimAt
+    best = -1
+    for i = 0 to m.boxes.Count() - 1
+        b = m.boxes[i]
+        if best < 0 or Abs(b.x + b.w / 2 - x) < Abs(m.boxes[best].x + m.boxes[best].w / 2 - x) then best = i
+    end for
+    if best < 0 then return
+    m.cursor = best
+    m.aimed = true
     render()
 end sub
 
@@ -58,38 +75,45 @@ sub render()
             lbl.color = focusring.PLAIN_TEXT
         end if
     end for
+    if m.cursor < m.boxes.Count()
+        b = m.boxes[m.cursor]
+        m.top.cursorX = b.x + b.w / 2
+    else
+        m.top.cursorX = -1
+    end if
     if focused and m.cursor < m.boxes.Count()
         b = m.boxes[m.cursor]
         focusring.around(m.ring, b.x, 0, b.w, b.h)
     else
         m.ring.visible = false
     end if
-    speak(focused)
+    focusring.logShown("tabs", m.ring.visible)
+    describeCursor()
 end sub
 
-' Says the cursor's tab when it moves or the row gets focus.
-sub speak(focused as boolean)
-    text = ""
+' The cursor's tab, for the focus tracker; becoming the shown one keeps
+' its place, so "shown" is said without counting as a move.
+sub describeCursor()
     tabs = m.top.tabs
-    if focused and util.isArray(tabs) and m.cursor < tabs.Count()
-        parts = [tabs[m.cursor], "tab " + speech.position(m.cursor, tabs.Count())]
-        if m.cursor = m.top.shown then parts.Push("shown")
-        text = speech.join(parts)
-        if text <> m.spoken then log.debug("tabs", "focus", { index: m.cursor, label: tabs[m.cursor] })
+    if not util.isArray(tabs) or m.cursor >= tabs.Count()
+        m.top.cursor = focustrack.describe("tabs", "", "", {})
+        return
     end if
-    if text <> "" and text <> m.spoken then speech.say(text)
-    m.spoken = text
+    parts = [tabs[m.cursor], "tab " + speech.position(m.cursor, tabs.Count())]
+    if m.cursor = m.top.shown then parts.Push("shown")
+    m.top.cursor = focustrack.describe("tabs", m.cursor.ToStr(), speech.join(parts), { index: m.cursor, label: tabs[m.cursor] })
 end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
     count = m.boxes.Count()
-    if key = "left"
-        if m.cursor > 0 then m.cursor = m.cursor - 1
+    ' Left/Right wrap around the row's ends, like every row of text.
+    if key = "left" and count > 0
+        m.cursor = (m.cursor - 1 + count) mod count
         render()
         return true
-    else if key = "right"
-        if m.cursor < count - 1 then m.cursor = m.cursor + 1
+    else if key = "right" and count > 0
+        m.cursor = (m.cursor + 1) mod count
         render()
         return true
     else if key = "OK" and m.cursor < count
